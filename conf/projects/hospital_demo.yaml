@@ -1,0 +1,186 @@
+# ============================================================
+# 数据源：hospital_demo — demo 医院运营库
+#
+# ★ patient_no / patient_name / patient_phone / id_card 故意不定义（Prompt 层防线）
+# 角色规则（role_rules）说明见 src/nl2sql/security.py
+# ============================================================
+
+datasource:
+  code: hospital_demo
+  name: 医院运营 demo
+  description: 模拟医院门诊/住院运营数据，ChatBI 默认演示数据源
+  dsn: postgresql+asyncpg://rdagent:rdagent123@localhost:5432/chatbi_demo
+  milvus_prefix: chatbi
+  es_prefix: chatbi
+  role_rules:
+    default: deny
+    roles:
+      admin: all
+      doctor:
+        column: department_id
+        param: dept_id
+      cashier:
+        value: "status = 'paid'"
+      patient: deny
+
+# ============================================================
+# NL2SQL 元数据定义 — demo 医院运营库（chatbi_demo）
+# 离线构建脚本读取此文件 → PG 元数据表 + Milvus 向量 + ES 列值
+#
+# ★ patient_no / patient_name / patient_phone / id_card 故意不定义（Prompt 层防线）
+# ============================================================
+
+tables:
+  - name: outpatient_visits
+    role: fact
+    description: 门诊挂号明细
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+      - name: visit_no
+        type: VARCHAR(20)
+        role: dimension
+        description: 挂号单号
+      - name: department_id
+        type: BIGINT
+        role: foreign_key
+        description: 科室ID，维表 departments.id → departments.name（科室名称，如 内科）；按科室分组/展示时 JOIN departments 取 name
+        alias: ["科室", "门诊科室", "就诊科室"]
+      - name: visit_date
+        type: DATE
+        role: date
+        description: 挂号日期
+        alias: ["就诊日期", "挂号时间", "日期", "时间"]
+      - name: visit_type
+        type: VARCHAR(10)
+        role: dimension
+        description: 挂号类型（初诊/复诊/急诊）
+        alias: ["类型", "初诊", "复诊", "急诊"]
+        sync: true
+      - name: registration_fee
+        type: NUMERIC(8,2)
+        role: measure
+        description: 挂号费（元）
+        alias: ["挂号费", "费用", "收费"]
+      - name: doctor_name
+        type: VARCHAR(50)
+        role: dimension
+        description: 接诊医生姓名
+        alias: ["医生", "接诊医生", "大夫"]
+      - name: status
+        type: VARCHAR(10)
+        role: dimension
+        description: 缴费状态（paid=已缴费/unpaid=未缴费/cancelled=已退号）
+        alias: ["状态", "缴费", "缴费状态", "已缴费", "paid"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: 创建时间
+        alias: ["创建时间"]
+
+  - name: inpatient_records
+    role: fact
+    description: 住院记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+      - name: record_no
+        type: VARCHAR(20)
+        role: dimension
+        description: 住院记录号
+      - name: department_id
+        type: BIGINT
+        role: foreign_key
+        description: 科室ID，维表 departments.id → departments.name（科室名称）；按科室分组/展示时 JOIN departments 取 name
+        alias: ["科室", "住院科室"]
+      - name: admit_date
+        type: DATE
+        role: date
+        description: 入院日期
+        alias: ["入院", "入院日期", "入院时间", "日期"]
+      - name: discharge_date
+        type: DATE
+        role: date
+        description: 出院日期（未出院为 NULL）
+        alias: ["出院", "出院日期"]
+      - name: stay_days
+        type: INTEGER
+        role: measure
+        description: 住院天数
+        alias: ["住院天数", "天数"]
+      - name: total_cost
+        type: NUMERIC(12,2)
+        role: measure
+        description: 住院总费用（元）
+        alias: ["住院费用", "费用", "花费", "金额"]
+      - name: status
+        type: VARCHAR(15)
+        role: dimension
+        description: 住院状态（in_treatment=在院/discharged=已出院/settled=已结算）
+        alias: ["状态", "在院", "出院", "结算"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: 创建时间
+        alias: ["创建时间"]
+
+  - name: departments
+    role: dim
+    description: 科室维表
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: 科室名称（如 内科、外科、儿科、妇产科、骨科）
+        alias: ["科室", "科室名", "科室名称"]
+        sync: true
+      - name: category
+        type: VARCHAR(20)
+        role: dimension
+        description: 科室大类
+        alias: ["大类", "类别"]
+        sync: true
+      - name: building
+        type: VARCHAR(20)
+        role: dimension
+        description: 所在楼栋（门诊楼/住院楼/医技楼）
+        alias: ["楼栋", "楼", "位置"]
+        sync: true
+      - name: floor
+        type: INTEGER
+        role: dimension
+        description: 所在楼层
+        alias: ["楼层"]
+
+metrics:
+  - name: 门诊量
+    description: 门诊挂号人次， outpatient_visits 按条件 COUNT(*)，不含 cancelled
+    relevant_columns: ["outpatient_visits.id", "outpatient_visits.visit_date", "outpatient_visits.department_id"]
+    alias: ["门诊人次", "挂号量", "挂号人次", "就诊量", "就诊人次"]
+
+  - name: 门诊收入
+    description: 门诊挂号费收入，SUM(registration_fee)，仅统计已缴费（status='paid'）
+    relevant_columns: ["outpatient_visits.registration_fee", "outpatient_visits.status", "outpatient_visits.visit_date"]
+    alias: ["挂号收入", "门诊收费", "门诊费用"]
+
+  - name: 住院人次
+    description: 住院记录数，inpatient_records COUNT(*)
+    relevant_columns: ["inpatient_records.id", "inpatient_records.admit_date", "inpatient_records.department_id"]
+    alias: ["入院人次", "住院人数", "住院数"]
+
+  - name: 住院收入
+    description: 住院费用总收入，SUM(total_cost)
+    relevant_columns: ["inpatient_records.total_cost", "inpatient_records.admit_date", "inpatient_records.department_id"]
+    alias: ["住院费用", "住院总收入"]
+
+  - name: 平均住院日
+    description: 平均住院天数，AVG(stay_days)
+    relevant_columns: ["inpatient_records.stay_days", "inpatient_records.department_id"]
+    alias: ["平均住院天数", "住院时长"]

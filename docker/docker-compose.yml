@@ -1,0 +1,96 @@
+# ============================================================
+# rd-chatBI 编排
+#
+# 策略：基础设施复用 rd-agent-platform（PG/Redis/Milvus 已在
+#       rd-agent-net 网络里，库/索引/collection 前缀隔离），
+#       本项目只新增应用容器 + Elasticsearch（列值召回）。
+#
+# 启动：
+#   docker network create rd-agent-net   # 已存在则忽略
+#   docker compose up -d --build
+#
+# 首次启动会自动跑 init（建 demo 库表 + 种子数据 + 元数据三层构建），
+# 需要在 .env 里配好 DASHSCOPE_API_KEY。
+# ============================================================
+
+services:
+  # ── 应用 ──────────────────────────────────────────────────
+  chatbi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: rd-chatbi:latest
+    container_name: rd-chatbi
+    ports:
+      - "8003:8003"
+    env_file:
+      - ../.env
+    environment:
+      # 容器内用服务名互访（覆盖 .env 的 localhost）
+      DB_HOST: rd-agent-postgres
+      REDIS_HOST: rd-agent-redis
+      MILVUS_HOST: rd-agent-milvus
+      ES_HOST: chatbi-es
+    depends_on:
+      chatbi-es:
+        condition: service_healthy
+      chatbi-init:
+        condition: service_completed_successfully
+    networks:
+      - rd-agent-net
+    restart: unless-stopped
+
+  # ── Elasticsearch（列值召回，本项目新增）────────────────────
+  chatbi-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
+    container_name: rd-chatbi-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - chatbi_es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - rd-agent-net
+
+  # ── 一次性初始化（demo 数据 + 元数据三层构建）───────────────
+  chatbi-init:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: rd-chatbi:latest
+    container_name: rd-chatbi-init
+    env_file:
+      - ../.env
+    environment:
+      DB_HOST: rd-agent-postgres
+      REDIS_HOST: rd-agent-redis
+      MILVUS_HOST: rd-agent-milvus
+      ES_HOST: chatbi-es
+    command: >
+      sh -c "python scripts/init_demo_data.py &&
+             for f in conf/projects/*.yaml; do
+               ds=$$(python -c \"import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))['datasource']['code'])\" $$f);
+               python scripts/build_nl2sql_meta.py --datasource $$ds --rebuild;
+             done"
+    depends_on:
+      chatbi-es:
+        condition: service_healthy
+    networks:
+      - rd-agent-net
+    restart: "no"
+
+volumes:
+  chatbi_es_data:
+
+networks:
+  rd-agent-net:
+    external: true
+    name: rd-agent-platform_rd-agent-net   # rd-agent-platform compose 的实际网络名   # 复用 rd-agent-platform 创建的网络
