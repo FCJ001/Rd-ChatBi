@@ -125,10 +125,12 @@ async def execute_sql(sql: str, db: AsyncSession) -> tuple[list[dict], list[str]
     return rows, columns
 
 
-async def generate_summary(question: str, data: list[dict], llm: BaseChatModel) -> str:
-    """LLM 生成数据摘要"""
+async def generate_summary(
+    question: str, data: list[dict], llm: BaseChatModel, source_name: str = "业务数据库"
+) -> str:
+    """LLM 生成数据摘要（source_name 标注当前数据源，多数据源不再硬编码）"""
     result_str = json.dumps(data[:20], ensure_ascii=False, default=str)
-    prompt = SUMMARY_PROMPT.format(question=question, result=result_str)
+    prompt = SUMMARY_PROMPT.format(question=question, result=result_str, source_name=source_name)
     response = await llm.ainvoke([SystemMessage(content=prompt)])
     return response.content
 
@@ -143,11 +145,13 @@ async def run_query(
     role_rules: dict | None = None,
     params: dict | None = None,
     schema: str = "",
+    source_name: str = "业务数据库",
 ) -> QueryResult:
     """完整 NL2SQL 流程：生成 SQL → 安全校验 → 行过滤 → 执行 → 摘要
 
     role_rules/params: 数据驱动的行级过滤（见 security.apply_role_filter）
-    schema: 当前数据源的动态表结构描述"""
+    schema: 当前数据源的动态表结构描述
+    source_name: 摘要里标注的数据源名"""
     error_hint = ""
 
     for attempt in range(MAX_RETRIES + 1):
@@ -176,7 +180,7 @@ async def run_query(
 
         try:
             data, columns = await execute_sql(filtered_sql, db)
-            summary = await generate_summary(question, data, llm)
+            summary = await generate_summary(question, data, llm, source_name)
 
             result = QueryResult(
                 question=question, sql=filtered_sql,

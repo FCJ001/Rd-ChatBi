@@ -61,8 +61,8 @@ tables:
       - name: status
         type: VARCHAR(20)
         role: dimension
-        description: 问题状态
-        alias: ["状态"]
+        description: 问题状态，枚举值固定为英文：open(未处理)/in_progress(处理中)/resolved(已解决)/closed(已关闭)/verified(已验证)，过滤时必须用英文值如 status='closed'
+        alias: ["状态", "关闭", "未关闭", "已关闭"]
         sync: true
       - name: severity
         type: VARCHAR(20)

@@ -41,7 +41,8 @@ async def execute_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
             result = await db.execute(text(filtered_sql))
             columns = list(result.keys())
             rows = [dict(row) for row in result.mappings().all()]
-            summary = await generate_summary(state["query"], rows, llm)
+            source_name = ctx.get("source_name") or "业务数据库"
+            summary = await generate_summary(state["query"], rows, llm, source_name)
         except Exception as e:
             columns, rows, summary, error = [], [], "", str(e)
 

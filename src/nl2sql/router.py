@@ -149,6 +149,7 @@ async def bi_query(
         role_rules=ds.role_rules,
         params=params,
         schema=schema,
+        source_name=ds.name,
     )
 
     resp = BIQueryResponse(
@@ -248,6 +249,7 @@ async def bi_query_stream(
     # 认证用户角色 + 数据源权限规则 → execute_sql 节点行级过滤
     ctx["role"] = user.role
     ctx["role_rules"] = ds.role_rules
+    ctx["source_name"] = ds.name
     ctx.update(_user_params(user))
 
     # ② 多轮上下文判断：追问 → 改写为独立完整问题；无历史 → 全新查询
