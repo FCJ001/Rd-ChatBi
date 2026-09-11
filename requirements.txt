@@ -51,7 +51,7 @@ dashscope==1.25.16
 
 # ---------------- 数据处理 / 图表 ----------------
 pandas==2.3.3
-plotly==6.9.0
+# plotly 已移除：服务端图表渲染改由前端 ECharts 承担（echarts_builder）
 kaleido==0.2.1
 
 # ---------------- NL2SQL（AST 层 SQL 注入）----------------

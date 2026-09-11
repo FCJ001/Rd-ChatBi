@@ -34,7 +34,6 @@ from src.nl2sql.echarts_builder import to_echarts_option
 from src.nl2sql.engine import (
     ConversationContext,
     QueryResult,
-    build_schema_prompt,
     resolve_question,
     run_query,
 )

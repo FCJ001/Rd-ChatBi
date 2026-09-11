@@ -17,23 +17,24 @@ async def validate_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
     sql = state["sql"]
     db = ctx["dw_db_session"]
 
-    # 安全规则校验
+    # 安全规则校验：返回的 validated_sql 是 AST 重写后的语句
+    # （LIMIT 强制覆盖、尾部注释剥离），必须回写 state，让下游执行它而不是原始 SQL
     from src.nl2sql.security import validate_sql as security_check
-    valid, result = security_check(sql)
+    valid, validated = security_check(sql)
     if not valid:
         if writer:
             writer({"type": "progress", "step": "验证SQL", "status": "error"})
-        return {"error": result}
+        return {"error": validated}
 
     try:
-        await db.execute(text(f"EXPLAIN {sql}"))
+        await db.execute(text(f"EXPLAIN {validated}"))
 
         from src.core.logger import logger
         logger.info("[validate_sql] EXPLAIN 校验通过")
 
         if writer:
             writer({"type": "progress", "step": "验证SQL", "status": "success"})
-        return {"error": None}
+        return {"error": None, "sql": validated}
     except Exception as e:
         from src.core.logger import logger
         logger.warning(f"[validate_sql] EXPLAIN 失败: {e}")

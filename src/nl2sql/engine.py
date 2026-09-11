@@ -1,7 +1,6 @@
 # ============================================================
-# NL2SQL 核心引擎
-# ★ 修复医疗版 validated NameError (search_sql_raw 返回二元组)
-# ★ 新增 last_sql 支持下钻追问
+# NL2SQL 核心引擎（一次性 JSON 响应路径）
+# 多轮下钻 / 旧接口走这里；9 阶段流水线走 nl2sql/pipeline.py
 # ============================================================
 
 from __future__ import annotations
@@ -223,47 +222,6 @@ async def run_query(
     if context:
         context.add(result)
     return result
-
-
-# ★ 修复 NameError：search_sql_raw 返回 (data, executed_sql) 二元组
-async def search_sql_raw(
-    question: str,
-    llm: BaseChatModel,
-    db: AsyncSession,
-    role: str = "admin",
-    dept_id: int | None = None,
-    role_rules: dict | None = None,
-    params: dict | None = None,
-    schema: str = "",
-) -> tuple[list[dict], str]:
-    """检索 NL2SQL 原始结果，返回 (rows, executed_sql)"""
-    result = await run_query(
-        question, llm, db, role, dept_id,
-        role_rules=role_rules, params=params, schema=schema,
-    )
-    if result.success:
-        return result.data, result.sql
-    return [], result.sql
-
-
-async def search_sql(
-    question: str,
-    llm: BaseChatModel,
-    db: AsyncSession,
-    role: str = "admin",
-    dept_id: int | None = None,
-    role_rules: dict | None = None,
-    params: dict | None = None,
-    schema: str = "",
-) -> str:
-    """检索 NL2SQL 结果，返回 LLM 摘要"""
-    result = await run_query(
-        question, llm, db, role, dept_id,
-        role_rules=role_rules, params=params, schema=schema,
-    )
-    if result.success:
-        return result.summary
-    return result.error
 
 
 async def resolve_question(

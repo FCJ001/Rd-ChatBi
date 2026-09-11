@@ -31,6 +31,8 @@ class DataAgentState(TypedDict, total=False):
     db_info: DBInfoState
     sql: str
     error: str  # None 表示 SQL 校验通过，非空为错误信息
+    # 已进行的 LLM 纠错轮数（correct_sql 累加），预算见 graph.MAX_SQL_FIX_ROUNDS
+    sql_fix_rounds: int
     # 执行结果（由 execute_sql 节点填充，供 SSE consumer 读取）
     result_sql: str
     result_columns: list[str]

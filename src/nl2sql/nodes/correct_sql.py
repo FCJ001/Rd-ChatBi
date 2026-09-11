@@ -55,7 +55,9 @@ async def correct_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
 
         if writer:
             writer({"type": "progress", "step": "校正SQL", "status": "success"})
-        return {"sql": sql, "error": None}
+        # sql_fix_rounds 供图路由判断纠错预算（用尽仍报错则拒绝执行）
+        return {"sql": sql, "error": None,
+                "sql_fix_rounds": state.get("sql_fix_rounds", 0) + 1}
     except Exception as e:
         if writer:
             writer({"type": "progress", "step": "校正SQL", "status": "error"})

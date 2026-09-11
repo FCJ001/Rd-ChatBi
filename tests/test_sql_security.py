@@ -194,3 +194,122 @@ def test_subquery_where_injected_at_top_level():
     assert ok
     # 注入发生在顶层 WHERE，而非子查询
     assert "department_id" in out
+
+
+# ── LIMIT 强制覆盖（AST 层）───────────────────────────────────
+
+def test_excessive_limit_overridden():
+    ok, sql = validate_sql("SELECT id FROM outpatient_visits LIMIT 99999999")
+    assert ok
+    assert "99999999" not in sql
+    assert "LIMIT 100" in sql
+
+
+def test_limit_in_subquery_clamped():
+    ok, sql = validate_sql(
+        "SELECT * FROM (SELECT * FROM outpatient_visits LIMIT 50000) AS sub LIMIT 20"
+    )
+    assert ok
+    assert "50000" not in sql
+    assert "LIMIT 20" in sql
+
+
+def test_limit_all_overridden():
+    # LIMIT ALL 合法但等于不限行数 → 必须覆盖为常量上限
+    ok, sql = validate_sql("SELECT id FROM outpatient_visits LIMIT ALL")
+    assert ok
+    assert "LIMIT 100" in sql
+
+
+def test_column_named_limit_still_gets_row_cap():
+    # 旧实现用 "LIMIT" not in sql.upper() 判断，列名含 limit 就漏加行数上限
+    ok, sql = validate_sql("SELECT limit_cnt FROM outpatient_visits")
+    assert ok
+    assert "LIMIT 100" in sql
+
+
+def test_fetch_first_clamped():
+    ok, sql = validate_sql(
+        "SELECT id FROM outpatient_visits OFFSET 0 ROWS FETCH FIRST 99999 ROWS ONLY"
+    )
+    assert ok
+    assert "99999" not in sql
+
+
+# ── 行级过滤参数安全（列名校验 + 字面量编码）─────────────────
+
+INJECTION_RULES = {
+    "default": "deny",
+    "roles": {
+        "doctor": {"column": "department_id", "param": "dept_id"},
+    },
+}
+
+
+def test_param_string_injection_contained():
+    # 值不是 int → 按字符串字面量编码，OR 1=1 不会逃逸出引号
+    ok, out = apply_role_filter(
+        "SELECT id FROM outpatient_visits", role="doctor",
+        role_rules=INJECTION_RULES, params={"dept_id": "7 OR 1=1"},
+    )
+    assert ok
+    assert "department_id = '7 OR 1=1'" in out
+
+
+def test_param_quote_escape():
+    ok, out = apply_role_filter(
+        "SELECT id FROM outpatient_visits", role="doctor",
+        role_rules=INJECTION_RULES, params={"dept_id": "x' OR '1'='1"},
+    )
+    assert ok
+    # 单引号被双写转义，无法跳出字符串字面量
+    assert "department_id = 'x'' OR ''1''=''1'" in out
+
+
+def test_param_union_injection_contained():
+    ok, out = apply_role_filter(
+        "SELECT id FROM outpatient_visits", role="doctor",
+        role_rules=INJECTION_RULES, params={"dept_id": "1 UNION SELECT 2"},
+    )
+    assert ok
+    assert "'1 UNION SELECT 2'" in out
+    assert out.upper().count("UNION") == 1  # 只在字符串字面量里
+
+
+def test_illegal_column_rejected():
+    bad_rules = {
+        "default": "deny",
+        "roles": {"doctor": {"column": "a; DROP TABLE x", "param": "dept_id"}},
+    }
+    ok, _ = apply_role_filter(
+        "SELECT id FROM t", role="doctor", role_rules=bad_rules, params={"dept_id": 1},
+    )
+    assert not ok
+
+
+def test_unsupported_param_type_rejected():
+    ok, _ = apply_role_filter(
+        "SELECT id FROM t", role="doctor",
+        role_rules=INJECTION_RULES, params={"dept_id": {"$gt": 1}},
+    )
+    assert not ok
+
+
+def test_param_bool_normalized():
+    bool_rules = {
+        "default": "deny",
+        "roles": {"doctor": {"column": "is_vip", "param": "dept_id"}},
+    }
+    ok, out = apply_role_filter(
+        "SELECT id FROM t", role="doctor", role_rules=bool_rules, params={"dept_id": True},
+    )
+    assert ok
+    assert "is_vip = 1" in out
+
+
+def test_param_oversized_string_rejected():
+    ok, _ = apply_role_filter(
+        "SELECT id FROM t", role="doctor",
+        role_rules=INJECTION_RULES, params={"dept_id": "x" * 300},
+    )
+    assert not ok
