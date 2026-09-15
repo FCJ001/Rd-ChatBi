@@ -162,6 +162,42 @@ uvicorn src.main:app --port 8003
 <p>评测案例按数据源分文件：<code>eval/cases/nl2sql_cases.json</code>（rd_agent，50 条）、
 <code>eval/cases/nl2sql_cases_hospital.json</code>（hospital_demo，40 条）。
 <code>--project</code> 默认 <code>all</code>，跑全部有案例的数据源。</p>
+<h3 id="badcase-回流让题库自己长大">badcase 回流（让题库自己长大）</h3>
+<p>线上真实查询持续回流成待审案例，人工审过后进评测集 —— 题库不是人肉堆出来的。</p>
+<pre><code>线上失败/被拒/空结果 ─┐
+前端「答得不对」按钮 ─┼→ chatbi_badcases（待审队列）─→ 人工审核 ─→ eval/cases/*_reflow.json ─→ 离线门禁
+会话历史批量挖掘 ─────┘                                                      （git 提交，可 review）
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>采集来源</th>
+<th>触发点</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>api_error</code></td>
+<td><code>pipeline.py</code> 收尾 + <code>/query</code> 返回前</td>
+<td>失败/被拒/超时/0 行，自动落库；采集失败不影响查询（fail-open）</td>
+</tr>
+<tr>
+<td><code>manual</code></td>
+<td>前端 👎 按钮 → <code>POST /api/v1/bi/badcases</code></td>
+<td>★ 服务端从会话历史反查 predicted_sql/角色/行数，<strong>不信前端传参</strong></td>
+</tr>
+<tr>
+<td><code>history</code></td>
+<td><code>scripts/mine_badcases.py</code></td>
+<td>扫 Redis 会话历史补录（历史 7 天 TTL 会过期）</td>
+</tr>
+</tbody></table>
+<ul>
+<li><strong>去重</strong>：<code>sha256(datasource_id|归一化问题)</code> 唯一约束 + <code>ON CONFLICT</code> upsert。同一条问题反复踩只累加 <code>seen_count</code>，<strong>人工写的 golden_sql / 分类 / 状态永不被机器覆盖</strong>。</li>
+<li><strong>审核</strong>：<code>GET/PATCH /api/v1/bi/badcases</code>，页面 <code>GET /review</code>。鉴权用独立的 <code>ADMIN_TOKEN</code>（不与 <code>METRICS_TOKEN</code> 共用 —— 能抓指标不该等于能改评测集）；未配置 + header 模式下 fail-closed 拒绝。</li>
+<li><strong>导出</strong>：<code>python scripts/export_badcase_cases.py --write</code> 生成 <code>*_reflow.json</code>，<code>git commit</code> 后加 <code>--mark-exported</code> 更新状态。导出前逐条校验（golden 过安全层、分层合法、敏感列数据源禁止 <code>SELECT *</code>），一条脏数据就拒绝整批。</li>
+<li><strong>首次接入</strong>：<code>python scripts/export_badcase_cases.py --seed-from-export</code> 把现有 90 条案例灌进表，让 DB 从第一天就是评测集的真相来源。</li>
+</ul>
 <h2 id="安全模型">安全模型</h2>
 <p>四层防线，外加数据源级敏感列配置（<code>conf/projects/*.yaml</code> → <code>datasource.sensitive_columns</code>）：</p>
 <table>
@@ -217,6 +253,8 @@ uvicorn src.main:app --port 8003
 <li>熔断器保持 <code>CIRCUIT_BREAKER_ENABLED=true</code>；对 <code>circuit_breaker_state_changes_total</code> 配告警</li>
 <li>CORS/限流/健康检查已在 docker-compose 配好：应用容器非 root 运行、带 healthcheck；ES 只绑 127.0.0.1</li>
 <li>元数据结构变更后 <code>REBUILD_META=true docker compose up</code>（默认增量 upsert，不重复烧 embedding）</li>
+<li>配 <code>ADMIN_TOKEN</code>（题库审核写权限），否则 header 模式下审核接口 fail-closed 不可用；<code>/review</code> 与 <code>GET/PATCH /api/v1/bi/badcases*</code> 需要它</li>
+<li>关注 <code>chatbi_badcases</code> 的 pending 积压（<code>GET /api/v1/bi/badcases/stats</code>）—— 没人审的话这张表会变成垃圾场</li>
 </ul>
 
 </main>

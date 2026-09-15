@@ -1,0 +1,5 @@
+{
+  "description": "rd_agent 回流评测案例 —— 由 scripts/export_badcase_cases.py 从 chatbi_badcases 的 approved 记录生成。请勿手工编辑：改这里会被下次导出覆盖，请改库里的记录。",
+  "datasource": "rd_agent",
+  "cases": []
+}

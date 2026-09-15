@@ -36,3 +36,11 @@ class DataAgentContext(TypedDict, total=False):
     dept_id: int | None = None  # 医院场景：doctor 所属科室
     owner_domain_id: int | None = None  # ALM 场景：engineer 所属责任域
     business_line: str | None = None  # ALM 场景：business 所属业务线
+    # ── badcase 回流（见 src/nl2sql/badcase_store.py）────────────────
+    # ★ 流水线内部自己拿不到这些：datasource_id 埋在 pg_meta_repo 的私有属性里，
+    #   session_id/user_id 只存在于请求头。由 router 一次性填好，采集侧只读。
+    datasource_id: int | None = None
+    datasource_code: str = ""
+    session_id: str = ""
+    user_id: str = ""
+    trace_id: str = ""

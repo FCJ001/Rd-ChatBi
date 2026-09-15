@@ -56,6 +56,27 @@ uvicorn src.main:app --port 8003
 `eval/cases/nl2sql_cases_hospital.json`（hospital_demo，40 条）。
 `--project` 默认 `all`，跑全部有案例的数据源。
 
+### badcase 回流（让题库自己长大）
+
+线上真实查询持续回流成待审案例，人工审过后进评测集 —— 题库不是人肉堆出来的。
+
+```
+线上失败/被拒/空结果 ─┐
+前端「答得不对」按钮 ─┼→ chatbi_badcases（待审队列）─→ 人工审核 ─→ eval/cases/*_reflow.json ─→ 离线门禁
+会话历史批量挖掘 ─────┘                                                      （git 提交，可 review）
+```
+
+| 采集来源 | 触发点 | 说明 |
+|---|---|---|
+| `api_error` | `pipeline.py` 收尾 + `/query` 返回前 | 失败/被拒/超时/0 行，自动落库；采集失败不影响查询（fail-open） |
+| `manual` | 前端 👎 按钮 → `POST /api/v1/bi/badcases` | ★ 服务端从会话历史反查 predicted_sql/角色/行数，**不信前端传参** |
+| `history` | `scripts/mine_badcases.py` | 扫 Redis 会话历史补录（历史 7 天 TTL 会过期） |
+
+- **去重**：`sha256(datasource_id|归一化问题)` 唯一约束 + `ON CONFLICT` upsert。同一条问题反复踩只累加 `seen_count`，**人工写的 golden_sql / 分类 / 状态永不被机器覆盖**。
+- **审核**：`GET/PATCH /api/v1/bi/badcases`，页面 `GET /review`。鉴权用独立的 `ADMIN_TOKEN`（不与 `METRICS_TOKEN` 共用 —— 能抓指标不该等于能改评测集）；未配置 + header 模式下 fail-closed 拒绝。
+- **导出**：`python scripts/export_badcase_cases.py --write` 生成 `*_reflow.json`，`git commit` 后加 `--mark-exported` 更新状态。导出前逐条校验（golden 过安全层、分层合法、敏感列数据源禁止 `SELECT *`），一条脏数据就拒绝整批。
+- **首次接入**：`python scripts/export_badcase_cases.py --seed-from-export` 把现有 90 条案例灌进表，让 DB 从第一天就是评测集的真相来源。
+
 ## 安全模型
 
 四层防线，外加数据源级敏感列配置（`conf/projects/*.yaml` → `datasource.sensitive_columns`）：
@@ -97,3 +118,5 @@ uvicorn src.main:app --port 8003
 - 熔断器保持 `CIRCUIT_BREAKER_ENABLED=true`；对 `circuit_breaker_state_changes_total` 配告警
 - CORS/限流/健康检查已在 docker-compose 配好：应用容器非 root 运行、带 healthcheck；ES 只绑 127.0.0.1
 - 元数据结构变更后 `REBUILD_META=true docker compose up`（默认增量 upsert，不重复烧 embedding）
+- 配 `ADMIN_TOKEN`（题库审核写权限），否则 header 模式下审核接口 fail-closed 不可用；`/review` 与 `GET/PATCH /api/v1/bi/badcases*` 需要它
+- 关注 `chatbi_badcases` 的 pending 积压（`GET /api/v1/bi/badcases/stats`）—— 没人审的话这张表会变成垃圾场

@@ -31,9 +31,21 @@ if str(REPO_ROOT) not in sys.path:
 DEFAULT_CASES = CASES_DIR / "nl2sql_cases.json"
 
 # 每个数据源的案例文件（案例文件里的 datasource 字段优先）
+#
+# ★ *_reflow.json 是线上 badcase 回流出来的案例，由
+#   scripts/export_badcase_cases.py 从 chatbi_badcases 的 approved 记录生成后
+#   提交进仓库 —— 评测器本身仍然是纯函数、零外部依赖（CI 的 test job 没有 PG）。
+#   这两个文件必须始终存在（空集也要有 {"cases": []}），否则案例集会在
+#   「有没有跑过导出」之间悄悄变化。
 CASE_FILES_BY_PROJECT: dict[str, list[Path]] = {
-    "rd_agent": [CASES_DIR / "nl2sql_cases.json"],
-    "hospital_demo": [CASES_DIR / "nl2sql_cases_hospital.json"],
+    "rd_agent": [
+        CASES_DIR / "nl2sql_cases.json",
+        CASES_DIR / "nl2sql_cases_reflow.json",
+    ],
+    "hospital_demo": [
+        CASES_DIR / "nl2sql_cases_hospital.json",
+        CASES_DIR / "nl2sql_cases_reflow_hospital.json",
+    ],
 }
 
 

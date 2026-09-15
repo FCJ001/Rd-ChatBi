@@ -138,6 +138,12 @@ body {
 }
 .bi-section .copy-btn:hover { color:var(--primary); border-color:var(--primary); }
 
+/* 反馈行：按钮不再是绝对定位（那是给 SQL 块里的复制按钮用的） */
+.feedback-row { display:flex; align-items:center; gap:10px; }
+.feedback-row .fb-btn { position:static; padding:4px 12px; }
+.feedback-row .fb-btn:hover { color:var(--danger); border-color:var(--danger); }
+.fb-hint { font-size:12px; color:var(--muted); }
+
 .bi-table { width:100%; border-collapse:collapse; font-size:13px; }
 .bi-table th { background:var(--bg); font-weight:600; text-align:left; padding:8px 12px; border:1px solid var(--border); color:var(--title); }
 .bi-table td { padding:6px 12px; border:1px solid var(--border); color:var(--body); }
@@ -281,6 +287,11 @@ const store = {
 };
 // 每条消息的 SQL 原文（复制按钮经 data-* 取用，不走内联 onclick，防注入）
 const sqlTextStore = {};
+// 每条消息的反馈上下文（同上，经 data-* 取用）。
+// ★ 只存前端真正知道的：问题与会话ID。predicted_sql / 角色 / 行数由后端按
+//   会话历史反查 —— 前端能拿到的只有「它收到的最后一帧」，那一帧可能来自另一次
+//   请求，而且这些值本来就是可伪造的输入，不能作为 badcase 的现场。
+const feedbackStore = {};
 
 // 流水线步骤（与 9 阶段对应）
 const STEPS = [
@@ -528,6 +539,9 @@ async function sendQuestion() {
       }
     }
 
+    // ★ 反馈上下文必须在闭包失效前落到 store：sendQuestion 返回后
+    //   q / resolvedQ / lastResult 都不可达了
+    feedbackStore[msgId] = {question: q, resolved: resolvedQ, sql: lastResult?.sql || ''};
     renderBIResult(msgId, lastResult, chart, chartConfig);
   } catch(e) {
     document.getElementById(msgId+'-body').innerHTML =
@@ -581,7 +595,11 @@ function renderBIResult(msgId, data, chart, chartConfig) {
     return;
   }
   if (!data.success) {
-    body.innerHTML = `<div class="error-box">⚠️ ${escHtml(data.error || '查询失败')}</div>`;
+    // ★ 失败卡片同样要给反馈入口：查不出来正是最该被回流的 badcase。
+    //   服务端已经会自动收一条，用户补一句「我想问的其实是…」价值更高。
+    body.innerHTML = `<div class="error-box">⚠️ ${escHtml(data.error || '查询失败')}</div>`
+      + feedbackHTML(msgId);
+    bindFeedback(msgId, body);
     return;
   }
 
@@ -612,11 +630,14 @@ function renderBIResult(msgId, data, chart, chartConfig) {
     sqlTextStore[msgId] = data.sql;
     html += `<div class="bi-section"><div class="bi-label">💾 生成 SQL</div><pre style="position:relative"><button class="copy-btn" data-copy-sql="${msgId}">复制</button>${escHtml(data.sql)}</pre></div>`;
   }
+  // 反馈（badcase 回流入口，与复制按钮同一套 data-* + 委托模式）
+  html += feedbackHTML(msgId);
 
   body.innerHTML = html;
   body.querySelectorAll('.copy-btn[data-copy-sql]').forEach(btn => {
     btn.addEventListener('click', () => copyText(btn, sqlTextStore[btn.dataset.copySql] || ''));
   });
+  bindFeedback(msgId, body);
 
   // ECharts 渲染
   if (chart) {
@@ -628,6 +649,50 @@ function renderBIResult(msgId, data, chart, chartConfig) {
         window.addEventListener('resize', ()=>c.resize());
       }
     }, 100);
+  }
+}
+
+/* ── 反馈（badcase 回流）─────────────────────────────────────────
+   语义说明：这个按钮不做「SQL 跑通了但答得不对」的自动判定 —— 它只是把
+   一次人工判断变成可审核的记录。真正能自动筛出「答非所问」的信号是
+   row_count=0（服务端已自动采集）。两者进的是同一个待审队列。 */
+function feedbackHTML(msgId) {
+  return `<div class="bi-section feedback-row">
+    <button class="fb-btn" data-feedback="${msgId}">👎 答得不对</button>
+    <span class="fb-hint" id="${msgId}-fb"></span></div>`;
+}
+
+function bindFeedback(msgId, body) {
+  body.querySelectorAll('.fb-btn[data-feedback]').forEach(btn => {
+    btn.addEventListener('click', () => sendFeedback(btn.dataset.feedback, btn));
+  });
+}
+
+async function sendFeedback(msgId, btn) {
+  const item = feedbackStore[msgId];
+  if (!item || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const resp = await fetch(BASE+'/api/v1/bi/badcases', {
+      method:'POST',
+      headers: userHeaders(),
+      body: JSON.stringify({
+        question: item.question,
+        session_id: sessionId(),
+        sql: item.sql || '',
+      }),
+    });
+    const json = await resp.json();
+    if (json.code !== 200) throw new Error(json.message || '提交失败');
+    const d = json.data || {};
+    const hint = document.getElementById(msgId+'-fb');
+    if (hint) hint.textContent = d.seen_count > 1
+      ? `已记录（第 ${d.seen_count} 次反馈，会优先处理）`
+      : '已记录，感谢反馈';
+    toast('已提交，我们会跟进', 'success');
+  } catch(e) {
+    btn.disabled = false;
+    toast('提交失败：' + e.message, 'error');
   }
 }
 

@@ -88,7 +88,12 @@ async def execute_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
 
     return {
         "error": error,
-        "result_sql": filtered_sql,
+        # ★ 被角色规则拒绝时，apply_role_filter 返回的第二个值是**拒绝原因**
+        #   而不是 SQL（见 security.apply_role_filter）。直接把它当 result_sql
+        #   会把「当前角色 patient 无数据查询权限」这句中文写成「生成的 SQL」——
+        #   前端 SQL 段显示错误文案，badcase 回流也会存下这条垃圾预测。
+        #   这种时候模型确实生成过 SQL，而它就在 state 里，用它。
+        "result_sql": sql if not allowed else filtered_sql,
         "result_columns": columns,
         "result_data": rows,
         "result_row_count": len(rows),

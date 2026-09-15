@@ -117,6 +117,28 @@ class Settings(BaseSettings):
     # 生产环境务必配置或用网络隔离兜底
     METRICS_TOKEN: str = ""
 
+    # ---------------- badcase 回流（评测集持续长大） ----------------
+    # 详见 src/nl2sql/badcase_store.py 与 scripts/mine_badcases.py
+    BADCASE_CAPTURE_ENABLED: bool = True
+    # auto：只收「确实答错了」（DB 报错/超时/角色拒绝/0 行）；llm_error 这类
+    #   基础设施故障不收 —— 那不是案例质量问题，收了只会淹没审核队列
+    # annotate：另一条独立管道，把「模型没扛住」的请求也落下来，供
+    #   scripts/mine_badcases.py 区分「该补案例」和「该调 prompt/模型」
+    BADCASE_CAPTURE_LLM_ERRORS: bool = False
+    # 自动采集每数据源/每天的条数上限。★ 必须有：header 认证模式下 user_id
+    #   可伪造，等于对外开了一个写入 PG 的口子，无上限会被刷爆。
+    BADCASE_DAILY_CAP: int = 200
+
+    # ---------------- 题库审核（改评测集 = 写权限）----------------
+    # ★ 独立于 METRICS_TOKEN：指标读权限与改写 golden SQL 的权限不是一个信任
+    #   级别，共用一个 token 等于「能抓 Prometheus 的人就能改评测集」。
+    # 留空时退化：jwt 模式认 role_rules 里值为 all 的角色；header 模式按
+    # BADCASE_ADMIN_FAIL_CLOSED 决定拒绝还是放行（见 badcase_router.py）
+    ADMIN_TOKEN: str = ""
+    # header 模式（X-User-* 可伪造）且未配 ADMIN_TOKEN 时，审核写接口是否
+    # 直接拒绝。生产必须为 True；本地开发可设 False 免 token 调试。
+    BADCASE_ADMIN_FAIL_CLOSED: bool = True
+
     @property
     def DATABASE_URL(self) -> str:
         """本服务自有库 rd_chatbi（NL2SQL 元数据）"""

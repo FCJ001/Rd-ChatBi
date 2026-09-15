@@ -82,3 +82,33 @@ def test_unknown_project_raises():
 
     with pytest.raises(FileNotFoundError):
         load_project_cases("no_such_project")
+
+
+def test_reflow_files_exist():
+    """★ 回流案例文件必须始终存在（空集也要有 {"cases": []}）。
+
+    _files_for 会按 f.exists() 过滤 —— 文件不存在时评测器静默少读一批案例，
+    案例集会在「有没有跑过导出」之间悄悄变化，而门禁照样全绿。
+    这里把它钉死：少一个文件就红。
+    """
+    for project, files in CASE_FILES_BY_PROJECT.items():
+        reflow = [f for f in files if "reflow" in f.name]
+        assert reflow, f"数据源 {project} 没有配置回流案例文件"
+        for f in reflow:
+            assert f.exists(), (
+                f"回流案例文件缺失: {f.name} —— "
+                f"跑 python scripts/export_badcase_cases.py --write 生成"
+            )
+            import json
+
+            json.loads(f.read_text(encoding="utf-8"))  # 必须是合法 JSON
+
+
+def test_reflow_ids_do_not_collide():
+    """★ 回流案例 id 用 R 前缀，不能与存量 N*/H* 撞 ——
+    load_project_cases 撞 id 是直接 raise 的，会让整个离线门禁报错"""
+    for project in CASE_FILES_BY_PROJECT:
+        ids = [c["id"] for c in load_project_cases(project)]
+        reflow_ids = [i for i in ids if i.startswith("R")]
+        legacy = [i for i in ids if not i.startswith("R")]
+        assert not (set(reflow_ids) & set(legacy)), f"{project}: 回流 id 与存量 id 冲突"

@@ -13,6 +13,8 @@
 
 import asyncio
 import json
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -22,13 +24,15 @@ from src.api.deps import get_embedding_model, get_llm
 from src.core.base_schema import ResponseSchema
 from src.core.deps import UserContext, get_current_user
 from src.core.exceptions import BizException
-from src.core.logger import logger
+from src.core.logger import logger, trace_id_var
 from src.core.rate_limit import enforce_rate_limit
 from src.infra.datasources import DataSourceConfig, get_datasource, list_datasources
 from src.infra.datasources import dw_session_factory
 from src.infra.db import AsyncSessionLocal
 from src.infra.es_client import get_es_client
 from src.infra.milvus_client import get_milvus_client
+from src.nl2sql.admin_deps import require_badcase_admin
+from src.nl2sql.badcase_capture import safe_capture_legacy
 from src.nl2sql.chart_advisor import recommend_chart
 from src.nl2sql.ctx_store import add_turn, clear, get_context, get_history_payload
 from src.nl2sql.echarts_builder import to_echarts_option
@@ -338,6 +342,18 @@ async def bi_query(
         except Exception as e:
             logger.warning(f"图表生成失败: {e}")
 
+    # ★ 必须显式持久化：run_query 内部的 context.add() 只改内存里那个对象，
+    #   而 get_context 在 redis 后端下每次返回的是**新构造的**实例（不落
+    #   _MEMORY_STORE）—— 不调 add_turn 的话，/query 这条链路的历史从来没进过
+    #   Redis，多轮追问与用户反馈溯源都会失忆。add_turn 读的是 Redis 里的那份，
+    #   不会把本轮记两次。
+    await add_turn(user.user_id, user.project_id, req.session_id, result)
+
+    # badcase 回流：失败/被拒/空结果的查询自动进审核队列（fail-open）
+    await safe_capture_legacy(
+        user=user, question=req.question, datasource_code=ds.code,
+        result=result, trace_id=trace_id_var.get() or "",
+    )
 
     return ResponseSchema(data=resp)
 
@@ -427,6 +443,16 @@ async def bi_query_stream(
             logger.warning(f"多轮改写失败，使用原始问题: {e}")
             question = req.question
 
+        # badcase 回流所需的现场：流水线内部拿不到从请求头来的这些字段
+        ctx["datasource_id"] = ds.id
+        ctx["datasource_code"] = ds.code
+        ctx["session_id"] = req.session_id
+        ctx["user_id"] = user.user_id
+        ctx["trace_id"] = trace_id_var.get() or ""
+        # ★ 原始问题与改写后的问题必须都留着：落库/落历史用原始问题，
+        #   复现案例用改写后的问题（多轮追问下后者才是独立可跑的）
+        ctx["raw_question"] = req.question
+        ctx["resolved_question"] = question
     except Exception:
         # 流式响应开始前出错：meta_db 的关闭职责还没移交给 event_stream 的
         # finally，必须在这里关掉，否则连接泄漏
@@ -506,13 +532,24 @@ async def bi_query_stream(
 
                 yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
-            # ⑧ 成功结果写入会话历史（供多轮追问使用）
-            if last_result and last_result.get("result_data"):
+            # ⑧ 结果写入会话历史（供多轮追问使用）
+            #
+            # ★ 两个已修的缺陷（它们让「从会话历史挖 badcase」直接空转）：
+            #   ① 原来只在 `last_result.get("result_data")` 非空时才写 ——
+            #      失败轮次 result_data 是空列表，于是全部失败轮**根本不落历史**。
+            #   ② 构造 QueryResult 时不传 success/error，而 dataclass 默认
+            #      success=True —— 就算落了也是「假成功」，事后无法区分。
+            #   现在无条件落，且如实带上 success/error。
+            if last_result:
+                err = last_result.get("result_error") or last_result.get("error") or ""
                 await add_turn(user.user_id, user.project_id, req.session_id, QueryResult(
-                    question=question,
+                    # ★ 存原始问题：改写后的「住院记录数是多少？」回看历史时对不上号
+                    question=req.question,
                     sql=last_result.get("result_sql", ""),
                     row_count=last_result.get("result_row_count", 0),
                     summary=last_result.get("result_summary", ""),
+                    success=not err,
+                    error=err,
                 ))
         finally:
             # 客户端断连（GeneratorExit）时取消流水线：await 未取消的 task
@@ -572,3 +609,232 @@ async def clear_history(
     await clear(user.user_id, user.project_id, session_id)
     return ResponseSchema(data={"session_id": session_id, "status": "cleared"})
 
+
+# ════════════════════════════════════════════════════════════════
+# badcase 回流（评测集真相来源）
+#
+# 队列与导出见 src/nl2sql/repositories/badcase_repo.py，
+# 纯函数（指纹/分类/校验）见 src/nl2sql/badcase_store.py。
+# ════════════════════════════════════════════════════════════════
+
+class BadcaseReportRequest(BaseModel):
+    """前端「答得不对」上报。
+
+    ★ 只收前端真正知道的东西：问题、会话、它渲染出来的那条 SQL。
+      其余字段（改写后的问题 / 角色 / 行数 / 预测 SQL）一律由服务端从会话
+      历史反查 —— 前端能拿到的只有「它收到的最后一帧」，那一帧可能来自另一次
+      请求；而 header 认证模式下这些值本来就是可伪造的。宁可少采，不可采脏。
+    """
+    question: str = Field(..., max_length=2000, description="用户原始问题")
+    session_id: str = Field(default="default", max_length=128)
+    sql: str = Field(default="", max_length=20000, description="前端展示的 SQL，仅用于比对")
+    reason: str = Field(default="", max_length=500, description="可选补充说明")
+
+
+class BadcaseReviewRequest(BaseModel):
+    """审核动作。status 留空表示只改打标字段，不动状态"""
+    status: str = Field(default="", description="pending / approved / rejected（留空=只改字段）")
+    golden_sql: str | None = Field(default=None, max_length=20000)
+    category: str | None = Field(default=None, max_length=50)
+    difficulty: str | None = Field(default=None, max_length=10)
+    reject_reason: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+def _match_history_turn(history: list[dict], question: str) -> dict | None:
+    """从会话历史里找出被反馈的那一轮（最近的一条匹配）。
+
+    ★ 按归一化问题匹配而不是「取最后一条」：用户可能在拿到结果后又问了几句
+      才回头点反馈，取最后一条会张冠李戴。
+    """
+    from src.nl2sql.badcase_store import normalize_question
+
+    target = normalize_question(question)
+    for turn in reversed(history):
+        if normalize_question(turn.get("question") or "") == target:
+            return turn
+    return None
+
+
+@router.post("/badcases", response_model=ResponseSchema[dict])
+async def report_badcase(
+    req: BadcaseReportRequest,
+    user: UserContext = Depends(get_current_user),
+    # 限流必须挂：header 模式下 user_id 可伪造，不挂等于开了一个无限写 PG 的口子
+    _: None = Depends(enforce_rate_limit),
+):
+    """用户标记「答得不对」→ 进待审队列（普通用户即可调用）"""
+    from src.nl2sql.badcase_store import fingerprint
+    from src.nl2sql.repositories import BadcaseRepository
+
+    ds = await get_datasource(user.project_id)
+    if ds is None:
+        raise BizException(f"数据源 {user.project_id} 未注册或未启用", code=40004)
+
+    history = await get_history_payload(user.user_id, user.project_id, req.session_id)
+    turn = _match_history_turn(history, req.question)
+
+    note = ""
+    predicted_sql = ""
+    resolved_question = ""
+    row_count = 0
+    if turn is None:
+        # 历史里没有（TTL 过期 / 前端对不上号）—— 仍然收，但标注来源存疑。
+        # ★ 不返回 4xx：用户反馈的价值高于一致性校验，硬拒等于把 bug 挡在门外。
+        note = "会话历史中未找到对应轮次，predicted_sql 缺失"
+        predicted_sql = req.sql
+    else:
+        predicted_sql = turn.get("sql") or ""
+        resolved_question = turn.get("question") or ""
+        row_count = int(turn.get("row_count") or 0)
+        if req.sql and predicted_sql and req.sql != predicted_sql:
+            note = "前端上报 SQL 与服务端历史不一致（以服务端为准）"
+        elif not predicted_sql:
+            predicted_sql = req.sql
+
+    async with AsyncSessionLocal() as db:
+        case_id, seen_count = await BadcaseRepository(db).upsert_badcase(
+            datasource_id=ds.id,
+            datasource_code=ds.code,
+            source="manual",
+            question=req.question,
+            resolved_question=resolved_question,
+            session_id=req.session_id,
+            user_role=user.role,
+            role_params=_user_params(user),
+            predicted_sql=predicted_sql,
+            error_type="unsatisfied",
+            error_message="用户标记答非所问",
+            row_count=row_count,
+            trace_id=trace_id_var.get() or "",
+            note=(note + ("；" + req.reason if req.reason else "")).strip("；"),
+        )
+
+    logger.info(
+        f"[badcase] 用户反馈已记录 id={case_id} ds={ds.code} "
+        f"fp={fingerprint(ds.id, req.question)[:8]} seen={seen_count}"
+    )
+    return ResponseSchema(data={
+        "id": case_id,
+        "status": "pending",
+        "seen_count": seen_count,
+        "matched_history": turn is not None,
+    })
+
+
+@router.get("/badcases/stats", response_model=ResponseSchema[dict])
+async def badcase_stats(
+    user: UserContext = Depends(get_current_user),
+    _admin: str = Depends(require_badcase_admin),
+):
+    """审核队列概览（管理员）"""
+    from src.infra.datasources import get_datasource
+    from src.nl2sql.repositories import BadcaseRepository
+
+    ds = await get_datasource(user.project_id)
+    if ds is None:
+        raise BizException(f"数据源 {user.project_id} 未注册或未启用", code=40004)
+
+    async with AsyncSessionLocal() as db:
+        data = await BadcaseRepository(db, ds.id).stats()
+    return ResponseSchema(data=data)
+
+
+@router.get("/badcases", response_model=ResponseSchema[dict])
+async def list_badcases(
+    status: str = "pending",
+    error_type: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    user: UserContext = Depends(get_current_user),
+    _admin: str = Depends(require_badcase_admin),
+):
+    """待审队列（管理员）。默认只按 status 过滤，datasource 固定为当前请求头的那个"""
+    from src.nl2sql.repositories import BadcaseRepository
+
+    ds = await get_datasource(user.project_id)
+    if ds is None:
+        raise BizException(f"数据源 {user.project_id} 未注册或未启用", code=40004)
+
+    async with AsyncSessionLocal() as db:
+        repo = BadcaseRepository(db, ds.id)
+        cases, total = await repo.list_cases(
+            status=status or None,
+            error_type=error_type or None,
+            limit=max(1, min(limit, 200)),
+            offset=max(0, offset),
+        )
+    return ResponseSchema(data={
+        "total": total,
+        "items": [asdict(c) for c in cases],
+        "datasource": ds.code,
+    })
+
+
+@router.patch("/badcases/{case_id}", response_model=ResponseSchema[dict])
+async def review_badcase(
+    case_id: int,
+    req: BadcaseReviewRequest,
+    user: UserContext = Depends(get_current_user),
+    _admin: str = Depends(require_badcase_admin),
+):
+    """审核：打标 / 补 golden_sql / 通过 / 驳回（管理员）"""
+    from src.nl2sql.badcase_store import CaseValidationError
+    from src.nl2sql.repositories import (
+        STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED, BadcaseRepository,
+    )
+
+    ds = await get_datasource(user.project_id)
+    if ds is None:
+        raise BizException(f"数据源 {user.project_id} 未注册或未启用", code=40004)
+
+    if req.status not in ("", STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED):
+        raise BizException(f"不支持的状态流转: {req.status}", code=40005)
+
+    async with AsyncSessionLocal() as db:
+        repo = BadcaseRepository(db, ds.id)
+        current = await repo.get_case(case_id)
+        if current is None:
+            raise BizException(f"案例 {case_id} 不存在或不属于数据源 {ds.code}", code=40404)
+
+        # approve 是最严的一道门：它决定一条线上记录能不能进评测集。
+        # 真正的把守点在 repo.update_review 里（那条路径所有调用方都要过），
+        # 这里先拦一道是为了把失败原因作为 40006 回给前端而不是 500。
+        try:
+            updated = await repo.update_review(
+                case_id,
+                status=req.status or None,
+                golden_sql=req.golden_sql,
+                category=req.category,
+                difficulty=req.difficulty,
+                reject_reason=req.reject_reason,
+                note=req.note,
+                reviewer=_admin,
+                sensitive_columns=ds.sensitive_columns,
+            )
+        except CaseValidationError as e:
+            raise BizException(f"不能通过：{e}", code=40006)
+
+    logger.info(f"[badcase] 审核 id={case_id} → {updated.status} by={_admin}")
+    return ResponseSchema(data=asdict(updated))
+
+
+@router.post("/badcases/export", response_model=ResponseSchema[dict])
+async def export_badcases(
+    user: UserContext = Depends(get_current_user),
+    _admin: str = Depends(require_badcase_admin),
+):
+    """导出预览（管理员）：把 approved 案例渲染成评测器吃的 JSON。
+
+    ★ 只返回预览，不写文件 —— 落盘由 scripts/export_badcase_cases.py 做，
+      且必须走 git 提交，评测集的变化要能在 PR 里被 review。
+    """
+    from src.nl2sql.badcase_export import build_export
+
+    ds = await get_datasource(user.project_id)
+    if ds is None:
+        raise BizException(f"数据源 {user.project_id} 未注册或未启用", code=40004)
+
+    async with AsyncSessionLocal() as db:
+        payload = await build_export(db, ds)
+    return ResponseSchema(data=payload)

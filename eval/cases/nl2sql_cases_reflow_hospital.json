@@ -1,0 +1,13 @@
+{
+  "description": "hospital_demo 回流评测案例 —— 由 scripts/export_badcase_cases.py 从 chatbi_badcases 的 approved 记录生成。请勿手工编辑：改这里会被下次导出覆盖，请改库里的记录。",
+  "datasource": "hospital_demo",
+  "cases": [
+    {
+      "id": "R001",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "住院总费用是多少？",
+      "golden_sql": "SELECT SUM(total_cost) AS total FROM inpatient_records"
+    }
+  ]
+}

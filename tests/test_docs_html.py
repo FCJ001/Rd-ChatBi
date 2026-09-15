@@ -95,13 +95,13 @@ def test_readme_html_has_no_raw_markdown():
 
 
 # ════════════════════════════════════════════════════════════════
-# 前端页面完整性（chatbi.html）
+# 前端页面完整性（chatbi.html / review.html）
 #
-# 页面是单文件、无构建，改了 JS 语法错误只有在浏览器里才会暴露 ——
+# 两个页面都是单文件、无构建，改了 JS 语法错误只有在浏览器里才会暴露 ——
 # 这里做最小静态检查，把「渲染出来是白屏」挡在合并前。
 # ════════════════════════════════════════════════════════════════
 
-PAGES = [REPO / "src/static/chatbi.html"]
+PAGES = [REPO / "src/static/chatbi.html", REPO / "src/static/review.html"]
 
 
 @pytest.mark.parametrize("page", PAGES, ids=[p.name for p in PAGES])
@@ -117,7 +117,7 @@ def test_page_is_wellformed(page: Path):
 
 @pytest.mark.parametrize("page", PAGES, ids=[p.name for p in PAGES])
 def test_page_escapes_user_content(page: Path):
-    """★ 页面靠转义函数防 XSS（问题/SQL 都是用户可控内容）。
+    """★ 两个页面都靠转义函数防 XSS（问题/SQL 都是用户可控内容）。
 
     之前 SQL 段踩过的坑：escHtml 只保护 HTML 结构，保护不了内联事件处理器
     属性里的 JS —— HTML 实体在属性值解析阶段还原成引号，随后就能逃逸

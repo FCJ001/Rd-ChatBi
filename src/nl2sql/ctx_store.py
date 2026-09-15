@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+
 from src.core.config import get_settings
 from src.core.logger import logger
 from src.nl2sql.engine import ConversationContext
@@ -136,3 +138,39 @@ def clear_memory_store() -> None:
 def memory_store_size() -> int:
     """测试辅助：当前进程内桶数量"""
     return len(_MEMORY_STORE)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 离线挖掘用：遍历全部会话历史（scripts/mine_badcases.py）
+# ════════════════════════════════════════════════════════════════════════
+
+async def iter_all_payloads() -> AsyncIterator[list[dict]]:
+    """遍历全部会话的历史 payload。**只给离线脚本用，绝不在请求路径调用。**
+
+    ★ 为什么必须放在这里而不是让脚本自己拼 key：`chatbi:ctx:{user}:{project}:{session}`
+      是 ctx_store 的私有约定，散到外面必然随时间漂移（改了格式而不自知）。
+    ★ 用 scan_iter 而非 keys()：KEYS 是 O(N) 阻塞命令，会把整个 Redis 卡住。
+    ★ 返回的只是 payload，**不返回 key** —— user_id 可含 ":"，
+      从 key 反解字段必然错位，调用方也不该拿到 user_id（不落库，见 Badcase 模型）。
+    """
+    import json
+
+    if get_settings().CONVERSATION_BACKEND != "redis":
+        # memory 后端下历史只在单个进程的 dict 里，独立脚本进程读不到
+        return
+    try:
+        from src.infra.redis_client import get_redis
+
+        r = await get_redis()
+        async for raw_key in r.scan_iter(match=f"{_redis_key('*')}", count=200):
+            raw = await r.get(raw_key)
+            if not raw:  # scan 与 get 之间可能已过期
+                continue
+            try:
+                yield json.loads(raw)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"[ctx_store] 历史脏数据跳过: {e}")
+                continue
+    except Exception as e:
+        logger.warning(f"[ctx_store] 遍历会话历史失败: {e}")
+        return

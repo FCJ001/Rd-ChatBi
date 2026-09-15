@@ -114,3 +114,13 @@ app.mount("/static", StaticFiles(directory="src/static"), name="static")
 async def index():
     return FileResponse("src/static/chatbi.html")
 
+
+@app.get("/review", include_in_schema=False)
+async def review_page():
+    """题库审核页（badcase 待审队列）。
+
+    ★ 页面本身不含数据、也没有权限判断：能不能看到内容由它调用的
+      /api/v1/bi/badcases* 决定（ADMIN_TOKEN / JWT role）。做成独立页面而不是
+      塞进 chatbi.html —— 后者是 C 端查询界面，加审核表格会毁掉它。
+    """
+    return FileResponse("src/static/review.html")

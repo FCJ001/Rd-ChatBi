@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rd-chatBI — 题库审核</title>
+<style>
+:root {
+  --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --muted:#656d76; --line:#d8dee4;
+  --accent:#0969da; --danger:#cf222e; --success:#1a7f37; --warn:#9a6700;
+  --code-bg:#f0f2f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0d1117; --card:#161b22; --ink:#e6edf3; --muted:#8b949e;
+          --line:#30363d; --accent:#58a6ff; --danger:#f85149; --success:#3fb950;
+          --warn:#d29922; --code-bg:#1c2128; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink);
+       font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+header { background:var(--card); border-bottom:1px solid var(--line); padding:12px 20px;
+         display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+         position:sticky; top:0; z-index:10; }
+h1 { font-size:16px; margin:0; }
+.muted { color:var(--muted); font-size:12px; }
+main { padding:20px; max-width:1200px; margin:0 auto; }
+input,select,textarea,button {
+  font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px;
+  background:var(--card); color:var(--ink);
+}
+button { cursor:pointer; }
+button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+button.primary:disabled { opacity:.45; cursor:not-allowed; }
+button.danger { color:var(--danger); border-color:var(--danger); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px;
+        padding:14px 16px; margin-bottom:12px; }
+.card-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.tag { font-size:11px; padding:2px 8px; border-radius:10px; background:var(--code-bg);
+       color:var(--muted); }
+.tag.warn { color:var(--warn); }
+.tag.danger { color:var(--danger); }
+.q { font-weight:600; font-size:15px; }
+pre { background:var(--code-bg); padding:10px; border-radius:6px; overflow-x:auto;
+      font-size:12px; margin:6px 0; white-space:pre-wrap; word-break:break-all; }
+.row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; }
+.row2 { display:grid; grid-template-columns:2fr 1fr; gap:8px; margin-top:8px; }
+.empty { text-align:center; color:var(--muted); padding:60px 0; }
+.toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+         padding:10px 20px; border-radius:6px; color:#fff; background:#333; z-index:99; }
+.toast.success { background:var(--success); }
+.toast.error { background:var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🩺 题库审核</h1>
+  <span class="muted" id="stat">加载中…</span>
+  <span style="flex:1"></span>
+  <select id="dsSelect"></select>
+  <select id="statusSelect">
+    <option value="pending">待审</option>
+    <option value="approved">已通过</option>
+    <option value="rejected">已驳回</option>
+    <option value="exported">已导出</option>
+    <option value="">全部</option>
+  </select>
+  <input id="token" type="password" placeholder="ADMIN_TOKEN" style="width:180px">
+  <button class="primary" id="reloadBtn">刷新</button>
+</header>
+<main>
+  <div id="list"></div>
+</main>
+
+<script>
+// 审核页是独立页面：查询界面（chatbi.html）是 C 端产物，把审核表格塞进去会毁掉它。
+// 本页只需要三件事：看清这条为什么错、写标准答案、通过/驳回。
+const TOKEN_KEY = 'chatbi_admin_token';
+const CATEGORIES = ['单表聚合','分组统计','排序TopN','时间窗口','多表JOIN','明细查询'];
+const DIFFICULTIES = ['easy','medium','hard'];
+const ERROR_LABEL = {
+  role_denied:'角色无权', timeout:'查询超时', db_error:'DB 报错', llm_error:'模型侧故障',
+  empty_result:'结果为空', truncated:'结果被截断', unsatisfied:'用户标记答非所问',
+};
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+function headers() {
+  return {
+    'Content-Type':'application/json',
+    'X-Project-Id': $('dsSelect').value || 'rd_agent',
+    'Authorization': 'Bearer ' + ($('token').value || ''),
+  };
+}
+
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(), 2500);
+}
+
+async function loadDatasources() {
+  try {
+    const r = await fetch('/api/v1/bi/datasources');
+    const j = await r.json();
+    $('dsSelect').innerHTML = (j.data||[])
+      .map(d => `<option value="${esc(d.code)}">${esc(d.name)}</option>`).join('');
+  } catch(e) { /* 服务未起时静默 */ }
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch('/api/v1/bi/badcases/stats', {headers: headers()});
+    const j = await r.json();
+    if (j.code !== 200) { $('stat').textContent = j.message || '无权访问'; return; }
+    const s = j.data.by_status || {};
+    $('stat').textContent = `待审 ${s.pending||0} · 已通过 ${s.approved||0} · `
+      + `已导出 ${s.exported||0} · 已驳回 ${s.rejected||0}`;
+  } catch(e) { $('stat').textContent = ''; }
+}
+
+async function loadList() {
+  const list = $('list');
+  list.innerHTML = '<div class="empty">加载中…</div>';
+  const status = $('statusSelect').value;
+  try {
+    const r = await fetch(`/api/v1/bi/badcases?status=${encodeURIComponent(status)}&limit=50`,
+                          {headers: headers()});
+    const j = await r.json();
+    if (j.code !== 200) {
+      list.innerHTML = `<div class="empty">${esc(j.message || '加载失败')}</div>`;
+      return;
+    }
+    const items = j.data.items || [];
+    if (!items.length) { list.innerHTML = '<div class="empty">没有符合条件的案例</div>'; return; }
+    list.innerHTML = items.map(renderCard).join('');
+    bindCards();
+  } catch(e) {
+    list.innerHTML = `<div class="empty">请求失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderCard(c) {
+  const tagCls = c.error_type === 'role_denied' ? 'tag warn'
+               : (c.error_type === 'llm_error' ? 'tag danger' : 'tag');
+  return `<div class="card" data-id="${c.id}">
+    <div class="card-head">
+      <span class="q">${esc(c.question)}</span>
+      <span class="${tagCls}">${esc(ERROR_LABEL[c.error_type] || c.error_type || '—')}</span>
+      <span class="tag">${esc(c.source)}</span>
+      <span class="tag">${esc(c.user_role || '—')}</span>
+      <span class="tag">${c.row_count} 行</span>
+      ${c.seen_count > 1 ? `<span class="tag warn">踩了 ${c.seen_count} 次</span>` : ''}
+      ${c.status !== 'pending' ? `<span class="tag">${esc(c.status)}</span>` : ''}
+    </div>
+    ${c.resolved_question && c.resolved_question !== c.question
+        ? `<div class="muted">改写后：${esc(c.resolved_question)}</div>` : ''}
+    ${c.error_message ? `<div class="muted">错误：${esc(c.error_message)}</div>` : ''}
+    ${c.predicted_sql ? `<pre>${esc(c.predicted_sql)}</pre>` : '<div class="muted">（无预测 SQL）</div>'}
+    ${c.trace_id ? `<div class="muted">trace_id: ${esc(c.trace_id)}</div>` : ''}
+    ${c.note ? `<div class="muted">备注：${esc(c.note)}</div>` : ''}
+    <div class="row2">
+      <textarea rows="2" data-field="golden" placeholder="golden_sql（标准答案，必填）">${esc(c.golden_sql)}</textarea>
+      <div>
+        <select data-field="category">${CATEGORIES.map(x =>
+          `<option value="${x}" ${x===c.category?'selected':''}>${x}</option>`).join('')}</select>
+        <select data-field="difficulty" style="margin-top:8px">${DIFFICULTIES.map(x =>
+          `<option value="${x}" ${x===c.difficulty?'selected':''}>${x}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="row">
+      <button class="primary" data-act="approve">✓ 通过并入库</button>
+      <button class="danger" data-act="reject">✗ 驳回</button>
+      <button data-act="save">仅保存草稿</button>
+    </div>
+  </div>`;
+}
+
+function bindCards() {
+  document.querySelectorAll('.card').forEach(card => {
+    card.querySelectorAll('button[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => act(card, btn.dataset.act, btn));
+    });
+  });
+}
+
+async function act(card, action, btn) {
+  const id = card.dataset.id;
+  const val = f => card.querySelector(`[data-field="${f}"]`).value.trim();
+  const body = {
+    golden_sql: val('golden'),
+    category: val('category'),
+    difficulty: val('difficulty'),
+  };
+  if (action === 'approve') body.status = 'approved';
+  else if (action === 'reject') {
+    const reason = prompt('驳回原因（可留空）') || '';
+    body.status = 'rejected';
+    body.reject_reason = reason;
+  }
+
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/v1/bi/badcases/${id}`, {
+      method: 'PATCH', headers: headers(), body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.code !== 200) throw new Error(j.message || '操作失败');
+    toast(action === 'approve' ? '已通过' : action === 'reject' ? '已驳回' : '已保存');
+    loadStats();
+    if (action !== 'save') loadList();
+  } catch(e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('token').value = localStorage.getItem(TOKEN_KEY) || '';
+$('token').addEventListener('input', e => localStorage.setItem(TOKEN_KEY, e.target.value));
+$('reloadBtn').addEventListener('click', () => { loadStats(); loadList(); });
+$('dsSelect').addEventListener('change', () => { loadStats(); loadList(); });
+$('statusSelect').addEventListener('change', loadList);
+
+(async () => {
+  await loadDatasources();
+  await loadStats();
+  await loadList();
+})();
+</script>
+</body>
+</html>
