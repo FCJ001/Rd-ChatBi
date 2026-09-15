@@ -5,6 +5,7 @@
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
 from src.nl2sql.prompt_loader import load_prompt
@@ -31,24 +32,21 @@ async def correct_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
         metric_infos_str = yaml.dump(metrics_list, allow_unicode=True, default_flow_style=False)
 
         # 加载并填充 prompt
+        # ★ 结构化内容先进，用户输入（query）最后填充：str.replace 是顺序替换，
+        #   query 里若含 "{sql}"/"{error}" 字面量，先填会被后续 replace 二次替换
         system_prompt = load_prompt("correct_sql")
         system_prompt = system_prompt.replace("{table_infos}", table_infos_str)
         system_prompt = system_prompt.replace("{metric_infos}", metric_infos_str)
-        system_prompt = system_prompt.replace("{query}", state["query"])
         system_prompt = system_prompt.replace("{sql}", state["sql"])
         system_prompt = system_prompt.replace("{error}", state.get("error", ""))
+        system_prompt = system_prompt.replace("{query}", state["query"])
 
-        response = await llm.ainvoke([
+        response = await safe_ainvoke(llm, [
             SystemMessage(content=system_prompt),
             HumanMessage(content="请根据错误信息修正上述 SQL"),
         ])
 
-        sql = response.content.strip()
-        if "```" in sql:
-            sql = sql.split("```")[1]
-            if sql.startswith("sql"):
-                sql = sql[3:]
-            sql = sql.strip()
+        sql = strip_code_fence(response.content)
 
         from src.core.logger import logger
         logger.info(f"[correct_sql] 纠错后 SQL ({len(sql)} 字符): {sql[:200]}")

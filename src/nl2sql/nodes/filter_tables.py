@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
+from src.nl2sql.llm_text import safe_ainvoke
 from src.nl2sql.prompt_loader import load_prompt
 
 
@@ -41,7 +42,7 @@ async def filter_tables(state: DataAgentState, ctx: DataAgentContext) -> dict:
             }
         tables_yaml = yaml.dump(tables_dict, allow_unicode=True, default_flow_style=False)
 
-        response = await llm.ainvoke([
+        response = await safe_ainvoke(llm, [
             SystemMessage(content=load_prompt("filter_table_info").replace("{tables_yaml}", tables_yaml)),
             HumanMessage(content=state["query"]),
         ])

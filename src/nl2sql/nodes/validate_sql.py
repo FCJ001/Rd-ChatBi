@@ -19,8 +19,11 @@ async def validate_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
 
     # 安全规则校验：返回的 validated_sql 是 AST 重写后的语句
     # （LIMIT 强制覆盖、尾部注释剥离），必须回写 state，让下游执行它而不是原始 SQL
+    # sensitive_columns：数据源敏感列文本拦截（SELECT * 由 execute_sql 节点结果列过滤兜底）
     from src.nl2sql.security import validate_sql as security_check
-    valid, validated = security_check(sql)
+    valid, validated = security_check(
+        sql, sensitive_columns=ctx.get("sensitive_columns"),
+    )
     if not valid:
         if writer:
             writer({"type": "progress", "step": "验证SQL", "status": "error"})

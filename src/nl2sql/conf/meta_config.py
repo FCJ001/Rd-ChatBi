@@ -18,6 +18,12 @@ class ColumnMeta:
     description: str = ""
     alias: list[str] = field(default_factory=list)
     sync: bool = False  # 是否需要从 DB 拉取枚举值写入 ES
+    # 外键列的取值来源（如 owner_domain_id 的 「1→电池系统域」 映射）。
+    # ★ 不填的话，sync 会去拉这一列本身的值 —— 但外键列存的是数字 ID
+    #   （1/2/3…），对模型和配置行级权限的人都毫无信息量。
+    #   填了 "owner_domains.name"，就把「域ID → 域名」的映射灌进 ES，
+    #   键仍是本列（owner_domain_id），值取维表的可读名。
+    enum_source: str | None = None
 
 
 @dataclass
@@ -45,6 +51,8 @@ class DatasourceMeta:
     milvus_prefix: str = "chatbi"
     es_prefix: str = "chatbi"
     role_rules: dict = field(default_factory=dict)
+    # 物理存在但元数据故意隐藏的敏感列（SQL 文本拦截 + 执行层结果列过滤）
+    sensitive_columns: list[str] = field(default_factory=list)
     description: str = ""
 
 
@@ -69,6 +77,7 @@ class MetaConfig:
                 milvus_prefix=ds.get("milvus_prefix", "chatbi"),
                 es_prefix=ds.get("es_prefix", "chatbi"),
                 role_rules=ds.get("role_rules") or {},
+                sensitive_columns=ds.get("sensitive_columns") or [],
                 description=ds.get("description", ""),
             )
 
@@ -83,6 +92,7 @@ class MetaConfig:
                     description=c.get("description", ""),
                     alias=c.get("alias", []),
                     sync=c.get("sync", False),
+                    enum_source=c.get("enum_source"),
                 ))
             tables.append(TableMeta(
                 name=t["name"],

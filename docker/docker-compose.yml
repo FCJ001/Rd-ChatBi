@@ -21,8 +21,11 @@ services:
       dockerfile: docker/Dockerfile
     image: rd-chatbi:latest
     container_name: rd-chatbi
+    # ★ 默认只绑本机回环：AUTH_MODE=header 下 X-User-* 头即身份，
+    #   绑 0.0.0.0 等于局域网内任何人可伪造 admin。生产经网关反代
+    #   （网关剥离外部身份头）或切 JWT 模式后，再改回 "8003:8003"。
     ports:
-      - "8003:8003"
+      - "127.0.0.1:8003:8003"
     env_file:
       - ../.env
     environment:
@@ -31,6 +34,13 @@ services:
       REDIS_HOST: rd-agent-redis
       MILVUS_HOST: rd-agent-milvus
       ES_HOST: chatbi-es
+    healthcheck:
+      # 无 curl 的 slim 镜像用 python 探活
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       chatbi-es:
         condition: service_healthy
@@ -48,8 +58,9 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    # xpack.security.enabled=false 时绝不能暴露给局域网，只绑本机回环供调试
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     volumes:
       - chatbi_es_data:/usr/share/elasticsearch/data
     healthcheck:
@@ -74,11 +85,15 @@ services:
       REDIS_HOST: rd-agent-redis
       MILVUS_HOST: rd-agent-milvus
       ES_HOST: chatbi-es
+      # 默认增量 upsert（幂等、不重复烧 embedding）；改元数据结构时 REBUILD_META=true
+      REBUILD_META: ${REBUILD_META:-false}
     command: >
       sh -c "python scripts/init_demo_data.py &&
+             FLAG='';
+             if [ \"$$REBUILD_META\" = 'true' ]; then FLAG='--rebuild'; fi;
              for f in conf/projects/*.yaml; do
                ds=$$(python -c \"import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))['datasource']['code'])\" $$f);
-               python scripts/build_nl2sql_meta.py --datasource $$ds --rebuild;
+               python scripts/build_nl2sql_meta.py --datasource $$ds $$FLAG;
              done"
     depends_on:
       chatbi-es:

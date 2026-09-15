@@ -15,12 +15,18 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence
 from src.nl2sql.prompts import (
     FOLLOWUP_PROMPT,
     NL2SQL_SYSTEM_PROMPT,
     REWRITE_PROMPT,
     SCHEMA_PROMPT,
     SUMMARY_PROMPT,
+)
+from src.nl2sql.security import (
+    apply_role_filter,
+    filter_result_columns,
+    validate_sql,
 )
 
 
@@ -39,7 +45,6 @@ def build_schema_prompt(tables) -> str:
             lines.append(f"  {c.name} {c.type} -- {c.description or c.role}{alias}{ex}")
         lines.append("")
     return "\n".join(lines)
-from src.nl2sql.security import apply_role_filter, validate_sql
 
 MAX_RETRIES = 2
 SQL_TIMEOUT = 10
@@ -57,8 +62,17 @@ class QueryResult:
     success: bool = True
 
 
+MAX_HISTORY_TURNS = 10
+
+
 @dataclass
 class ConversationContext:
+    """单会话的对话历史（进程内形态）。
+
+    ★ 只承载「最近 10 轮」的轻量摘要，不存 result.data —— 每轮最多 100 行
+      查询数据，10 轮就是上千行；多轮改写只用到 question/sql/summary，
+      存下来纯属浪费内存/带宽（见 CONVERSATION_MAX_AGE_SECONDS 注释）。
+    """
     history: list[QueryResult] = field(default_factory=list)
 
     @property
@@ -67,15 +81,48 @@ class ConversationContext:
 
     def add(self, result: QueryResult):
         self.history.append(result)
-        if len(self.history) > 10:
-            self.history = self.history[-10:]
+        if len(self.history) > MAX_HISTORY_TURNS:
+            self.history = self.history[-MAX_HISTORY_TURNS:]
+
+    # ── 序列化（Redis backend 用）──────────────────────────────
+    def to_payload(self) -> list[dict]:
+        """转成 JSON 可存的列表。data/columns 不存（见类 docstring）。"""
+        return [
+            {
+                "question": r.question,
+                "sql": r.sql,
+                "row_count": r.row_count,
+                "summary": r.summary or "",
+                "success": r.success,
+                "error": r.error or "",
+            }
+            for r in self.history
+        ]
+
+    @classmethod
+    def from_payload(cls, payload: list[dict] | None) -> "ConversationContext":
+        """从 Redis 读回。字段缺失/类型异常一律降级为默认值 ——
+        历史读不出来只该退化成「全新查询」，不该让整个请求 500。"""
+        ctx = cls()
+        if not isinstance(payload, list):
+            return ctx
+        for item in payload[-MAX_HISTORY_TURNS:]:
+            if not isinstance(item, dict):
+                continue
+            ctx.history.append(QueryResult(
+                question=str(item.get("question") or ""),
+                sql=str(item.get("sql") or ""),
+                row_count=int(item.get("row_count") or 0),
+                summary=str(item.get("summary") or ""),
+                error=str(item.get("error") or ""),
+                success=bool(item.get("success", True)),
+            ))
+        return ctx
 
 
 async def generate_sql(
     question: str,
     llm: BaseChatModel,
-    role: str = "admin",
-    dept_id: int | None = None,
     context: ConversationContext | None = None,
     error_hint: str = "",
     schema: str = "",
@@ -100,11 +147,8 @@ async def generate_sql(
     else:
         messages.append(HumanMessage(content=question))
 
-    response = await llm.ainvoke(messages)
-    sql = response.content.strip()
-    if "```" in sql:
-        sql = sql.split("```")[1].lstrip("sql").strip()
-    return sql
+    response = await safe_ainvoke(llm, messages)
+    return strip_code_fence(response.content)
 
 
 async def setup_readonly_session(db: AsyncSession) -> None:
@@ -130,7 +174,7 @@ async def generate_summary(
     """LLM 生成数据摘要（source_name 标注当前数据源，多数据源不再硬编码）"""
     result_str = json.dumps(data[:20], ensure_ascii=False, default=str)
     prompt = SUMMARY_PROMPT.format(question=question, result=result_str, source_name=source_name)
-    response = await llm.ainvoke([SystemMessage(content=prompt)])
+    response = await safe_ainvoke(llm, [SystemMessage(content=prompt)])
     return response.content
 
 
@@ -138,28 +182,30 @@ async def run_query(
     question: str,
     llm: BaseChatModel,
     db: AsyncSession,
-    role: str = "admin",
+    role: str = "patient",
     dept_id: int | None = None,
     context: ConversationContext | None = None,
     role_rules: dict | None = None,
     params: dict | None = None,
     schema: str = "",
     source_name: str = "业务数据库",
+    sensitive_columns: list[str] | None = None,
 ) -> QueryResult:
     """完整 NL2SQL 流程：生成 SQL → 安全校验 → 行过滤 → 执行 → 摘要
 
     role_rules/params: 数据驱动的行级过滤（见 security.apply_role_filter）
     schema: 当前数据源的动态表结构描述
-    source_name: 摘要里标注的数据源名"""
+    source_name: 摘要里标注的数据源名
+    sensitive_columns: 数据源敏感列 —— 文本层拦截 + 结果列过滤（堵 SELECT *）"""
     error_hint = ""
 
     for attempt in range(MAX_RETRIES + 1):
         raw_sql = await generate_sql(
-            question, llm, role, dept_id, context, error_hint, schema,
+            question, llm, context=context, error_hint=error_hint, schema=schema,
         )
         logger.info(f"NL2SQL (attempt {attempt + 1}): {raw_sql}")
 
-        valid, validated = validate_sql(raw_sql)
+        valid, validated = validate_sql(raw_sql, sensitive_columns=sensitive_columns)
         if not valid:
             result = QueryResult(question=question, sql=raw_sql,
                                  error=f"安全校验失败: {validated}", success=False)
@@ -179,6 +225,9 @@ async def run_query(
 
         try:
             data, columns = await execute_sql(filtered_sql, db)
+            # 执行层防线：SELECT * 能穿过文本校验，敏感列在这里从结果集剔除
+            # （必须在 generate_summary 之前，否则敏感数据仍会进 LLM prompt）
+            columns, data = filter_result_columns(columns, data, sensitive_columns)
             summary = await generate_summary(question, data, llm, source_name)
 
             result = QueryResult(
@@ -201,8 +250,10 @@ async def run_query(
             error_hint = str(e)
             logger.warning(f"SQL 执行失败 (attempt {attempt + 1}): {e}")
             if attempt == MAX_RETRIES:
+                # 原始 DB 错误只留日志（error_hint 仅供 LLM 纠错），
+                # 不透给用户 —— 错误文本可能暴露表结构
                 result = QueryResult(question=question, sql=filtered_sql,
-                                     error=f"执行失败: {error_hint}", success=False)
+                                     error="查询执行失败，请调整问题后重试", success=False)
                 if context:
                     context.add(result)
                 return result
@@ -213,7 +264,7 @@ async def run_query(
             logger.warning(f"异常 (attempt {attempt + 1}): {e}")
             if attempt == MAX_RETRIES:
                 result = QueryResult(question=question, sql=raw_sql,
-                                     error=f"执行失败: {error_hint}", success=False)
+                                     error="查询执行失败，请调整问题后重试", success=False)
                 if context:
                     context.add(result)
                 return result
@@ -241,7 +292,7 @@ async def resolve_question(
         previous_sql=context.last_result.sql,
         question=question,
     )
-    response = await llm.ainvoke([SystemMessage(content=prompt)])
+    response = await safe_ainvoke(llm, [SystemMessage(content=prompt)])
     rewritten = response.content.strip()
     if not rewritten or rewritten in ("无", "原问题"):
         return question

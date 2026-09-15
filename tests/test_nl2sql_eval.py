@@ -9,7 +9,13 @@ from pathlib import Path
 _EVAL_DIR = Path(__file__).resolve().parent.parent / "eval"
 sys.path.insert(0, str(_EVAL_DIR))
 
-from run_nl2sql_eval import compare_results, load_cases, run_offline_gate  # noqa: E402
+from run_nl2sql_eval import (  # noqa: E402
+    CASE_FILES_BY_PROJECT,
+    compare_results,
+    load_cases,
+    load_project_cases,
+    run_offline_gate,
+)
 
 
 def test_identical_results_match():
@@ -47,6 +53,32 @@ def test_missing_rows_detected():
 
 
 def test_offline_gate_passes():
+    """离线门禁覆盖**全部**注册数据源的案例文件（不只默认那一个）"""
     passed, failed, failures = run_offline_gate()
     assert failed == 0, "\n".join(failures)
-    assert passed == len(load_cases())
+    expected = sum(len(load_project_cases(p)) for p in CASE_FILES_BY_PROJECT)
+    assert passed == expected
+    assert passed > len(load_cases()), "多数据源案例应多于单个默认文件"
+
+
+def test_every_datasource_has_cases():
+    """★ 每个数据源都必须有案例：原实现 50 条全打在 rd_agent 上，
+    hospital_demo（默认演示数据源）零覆盖 —— 这是评测集的真实盲区"""
+    for project, files in CASE_FILES_BY_PROJECT.items():
+        assert any(f.exists() for f in files), f"数据源 {project} 没有案例文件"
+        assert load_project_cases(project), f"数据源 {project} 案例为空"
+
+
+def test_case_ids_unique_across_files():
+    """跨文件 id 不能重复（合并后统计会串）"""
+    ids = []
+    for project in CASE_FILES_BY_PROJECT:
+        ids += [c["id"] for c in load_project_cases(project)]
+    assert len(ids) == len(set(ids))
+
+
+def test_unknown_project_raises():
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        load_project_cases("no_such_project")

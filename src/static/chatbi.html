@@ -219,13 +219,15 @@ body {
   <label style="font-size:12px;color:var(--muted)">数据源</label>
   <select id="dsSelect" onchange="onDsChange()"></select>
   <label style="font-size:12px;color:var(--muted)">角色</label>
-  <select id="roleSelect" onchange="onRoleChange()">
-    <option value="admin">admin（全量）</option>
-    <option value="doctor">doctor（本科室）</option>
-    <option value="cashier">cashier（已缴费）</option>
-    <option value="patient">patient（无权限）</option>
-  </select>
-  <input class="role-input" id="deptInput" type="number" placeholder="科室ID" title="doctor 角色的科室 ID" style="display:none">
+  <!-- 角色选项由 loadDatasources() 按数据源动态填充：
+       不同数据源角色模型不同（医院 doctor / 汽车 engineer），写死必然对不上 -->
+  <select id="roleSelect" onchange="onRoleChange()"></select>
+  <!-- 通用角色参数：具体是什么由角色的 role_rules 决定
+       （doctor→科室ID / engineer→责任域ID / business→业务线）。
+       后端若能给出候选值就渲染成下拉——形如 owner_domain_id 的数字 ID，
+       用户不可能知道「电池系统域」是 1，只能靠后端把映射下发下来。 -->
+  <select class="role-input" id="paramSelect" onchange="onParamChange()" style="display:none"></select>
+  <input class="role-input" id="paramInput" type="text" oninput="onParamChange()" style="display:none">
   <label style="font-size:12px;color:var(--muted)">会话</label>
   <input class="role-input" id="sessionId" value="default" style="width:90px">
   <button class="icon-btn" onclick="newSession()" title="新会话">＋</button>
@@ -246,17 +248,17 @@ body {
         <span class="feature">👤 角色权限控制</span>
       </div>
       <div class="example-row">
-        <button class="example-q" onclick="fillExample(this)">上个月各科室门诊量TOP10有哪些？</button>
-        <button class="example-q" onclick="fillExample(this)">今年门诊收入按月份趋势如何？</button>
-        <button class="example-q" onclick="fillExample(this)">各科室平均住院日对比</button>
-        <button class="example-q" onclick="fillExample(this)">只要内科的数据</button>
+        <button class="example-q" onclick="fillExample(this)">目前有多少个未关闭且未验证的问题单？</button>
+        <button class="example-q" onclick="fillExample(this)">各责任域的问题单数量排名</button>
+        <button class="example-q" onclick="fillExample(this)">按严重程度统计问题单分布</button>
+        <button class="example-q" onclick="fillExample(this)">只看电池系统域的数据</button>
       </div>
     </div>
   </div>
 
   <div class="input-bar">
     <div class="input-row">
-      <textarea id="chatInput" placeholder="用自然语言提问，如：上个月各科室门诊量TOP10…" onkeydown="onInputKey(event)"></textarea>
+      <textarea id="chatInput" placeholder="用自然语言提问，如：各责任域的问题单数量排名…" onkeydown="onInputKey(event)"></textarea>
       <button id="sendBtn" onclick="sendQuestion()">发送</button>
     </div>
     <div class="input-hint">Enter 发送 · Shift+Enter 换行 · 同一会话支持多轮追问（图表 + 数据表 + SQL + 摘要）</div>
@@ -269,11 +271,16 @@ body {
    ══════════════════════════════════════════════════════════════ */
 const BASE = location.origin;
 const store = {
-  project: localStorage.getItem('chatbi_project') || 'hospital_demo',
+  project: localStorage.getItem('chatbi_project') || 'rd_agent',
   role: localStorage.getItem('chatbi_role') || 'admin',
-  deptId: localStorage.getItem('chatbi_dept') || '',
+  // 角色参数值（doctor→科室ID / engineer→责任域ID / business→业务线）。
+  // 按 {数据源: {角色: 值}} 存，否则切数据源会把上个场景的值带过去。
+  params: JSON.parse(localStorage.getItem('chatbi_params') || '{}'),
+  rolesByDs: {},   // 各数据源的角色清单（由 /datasources 下发）
   theme: localStorage.getItem('chatbi_theme') || 'light',
 };
+// 每条消息的 SQL 原文（复制按钮经 data-* 取用，不走内联 onclick，防注入）
+const sqlTextStore = {};
 
 // 流水线步骤（与 9 阶段对应）
 const STEPS = [
@@ -295,10 +302,7 @@ const STEPS = [
    Init
    ══════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
-  loadDatasources();
-  document.getElementById('roleSelect').value = store.role;
-  document.getElementById('deptInput').value = store.deptId;
-  onRoleChange();
+  loadDatasources();   // 内部会 renderRoles() → onRoleChange()
   if (store.theme === 'dark') document.documentElement.setAttribute('data-theme','dark');
   // 健康检查
   fetch(BASE+'/health').then(r=>r.json()).then(()=>{
@@ -324,26 +328,83 @@ async function loadDatasources() {
     const sel = document.getElementById('dsSelect');
     sel.innerHTML = list.map(d => `<option value="${escHtml(d.code)}">${escHtml(d.name)}</option>`).join('');
     sel.value = store.project;
-    if (sel.selectedIndex < 0) { sel.value = list[0]?.code || 'hospital_demo'; store.project = sel.value; }
+    if (sel.selectedIndex < 0) { sel.value = list[0]?.code || 'rd_agent'; store.project = sel.value; }
+    // 缓存各数据源的角色清单，切换时据此重渲染角色下拉
+    store.rolesByDs = Object.fromEntries(list.map(d => [d.code, d.roles || []]));
+    renderRoles();
   } catch(e) { /* 服务未起时静默 */ }
+}
+
+// 按当前数据源的角色清单渲染下拉。
+// ★ 角色写死是不行的：医院是 doctor/cashier，汽车是 engineer/business/aftersales，
+//   同一份 UI 要服务两套角色模型，只能由后端下发。
+function renderRoles() {
+  const roles = (store.rolesByDs || {})[store.project] || [];
+  const sel = document.getElementById('roleSelect');
+  if (!roles.length) { sel.innerHTML = '<option value="admin">admin</option>'; return; }
+  sel.innerHTML = roles.map(r =>
+    `<option value="${escHtml(r.name)}">${escHtml(r.name)}（${escHtml(r.label)}）</option>`
+  ).join('');
+  // 尽量保留用户选过的角色；该数据源没有这个角色就回退到第一个
+  if (!roles.some(r => r.name === store.role)) store.role = roles[0].name;
+  sel.value = store.role;
+  onRoleChange();
 }
 
 function onDsChange() {
   store.project = document.getElementById('dsSelect').value;
   localStorage.setItem('chatbi_project', store.project);
+  renderRoles();                    // 角色随数据源变，必须重渲染
   toast('已切换数据源: ' + store.project, 'success');
+}
+
+function currentRoleSpec() {
+  return ((store.rolesByDs || {})[store.project] || []).find(r => r.name === store.role) || {};
 }
 
 function onRoleChange() {
   const role = document.getElementById('roleSelect').value;
   store.role = role;
   localStorage.setItem('chatbi_role', role);
-  const showDept = role === 'doctor';
-  const deptEl = document.getElementById('deptInput');
-  deptEl.style.display = showDept ? '' : 'none';
-  if (showDept && !deptEl.value) deptEl.value = '1';
-  store.deptId = deptEl.value;
-  localStorage.setItem('chatbi_dept', deptEl.value);
+
+  // 有 param 的角色才需要输入框；placeholder 也按后端下发的 param 名走
+  const spec = currentRoleSpec();
+  const sel = document.getElementById('paramSelect');
+  const inp = document.getElementById('paramInput');
+  const saved = (store.params[store.project] || {})[role] || '';
+
+  if (!spec.param) {                    // 无参角色：两个控件都藏起来
+    sel.style.display = inp.style.display = 'none';
+    return;
+  }
+
+  if (spec.options && spec.options.length) {   // 有候选值 → 下拉
+    sel.innerHTML = spec.options
+      .map(o => `<option value="${escHtml(o.value)}">${escHtml(o.label)}</option>`).join('');
+    sel.title = `该角色按 ${spec.column || spec.param} 做行级过滤`;
+    sel.style.display = '';
+    inp.style.display = 'none';
+    // 之前选过的值如果还在候选里就沿用，否则用第一项
+    if (saved && spec.options.some(o => String(o.value) === String(saved))) sel.value = saved;
+    store.params[store.project] = store.params[store.project] || {};
+    store.params[store.project][role] = sel.value;
+  } else {                                     // 无候选 → 退回自由输入
+    inp.placeholder = spec.param;
+    inp.title = `该角色按 ${spec.column || spec.param} 做行级过滤`;
+    inp.style.display = '';
+    sel.style.display = 'none';
+    inp.value = saved;
+  }
+  localStorage.setItem('chatbi_params', JSON.stringify(store.params));
+}
+
+function onParamChange() {
+  const sel = document.getElementById('paramSelect');
+  const inp = document.getElementById('paramInput');
+  const val = sel.style.display !== 'none' ? sel.value : inp.value;
+  store.params[store.project] = store.params[store.project] || {};
+  store.params[store.project][store.role] = val;
+  localStorage.setItem('chatbi_params', JSON.stringify(store.params));
 }
 
 function newSession() {
@@ -363,7 +424,14 @@ function onInputKey(e) {
 function sessionId() { return document.getElementById('sessionId').value || 'default'; }
 function userHeaders() {
   const h = {'Content-Type':'application/json','X-User-Id':'web','X-User-Role':store.role,'X-Session-Id':sessionId(),'X-Project-Id':store.project};
-  if (store.role === 'doctor' && store.deptId) h['X-Dept-Id'] = store.deptId;
+  // ★ 参数头按角色的 role_rules 动态映射，不再写死 X-Dept-Id：
+  //   医院 doctor 用 dept_id，汽车 engineer 用 owner_domain_id，
+  //   business 用 business_line —— 写死的话切到汽车库会被行级过滤 fail-closed 拒绝。
+  //   后端 UserContext 认的就是这几个头名（见 src/core/deps.py）。
+  const PARAM_HEADERS = {dept_id:'X-Dept-Id', owner_domain_id:'X-Owner-Domain-Id', business_line:'X-Business-Line'};
+  const spec = currentRoleSpec();
+  const val = (store.params[store.project] || {})[store.role];
+  if (spec.param && val && PARAM_HEADERS[spec.param]) h[PARAM_HEADERS[spec.param]] = val;
   return h;
 }
 
@@ -537,10 +605,18 @@ function renderBIResult(msgId, data, chart, chartConfig) {
   }
   // SQL
   if (data.sql) {
-    html += `<div class="bi-section"><div class="bi-label">💾 生成 SQL</div><pre style="position:relative"><button class="copy-btn" onclick="copyText(this,'${escHtml(data.sql).replace(/'/g,"\\'")}')">复制</button>${escHtml(data.sql)}</pre></div>`;
+    // ★ SQL 不能拼进内联 onclick 的 JS 字符串里：HTML 实体（&#39;）在属性值
+    //   解析阶段会还原成单引号，随后 JS 解析时即可逃逸字符串字面量注入代码
+    //   （escHtml 只保护 HTML 结构，保护不了事件处理器属性里的 JS）。
+    //   改为存 JS 表 + data-* 标记 + addEventListener 委托。
+    sqlTextStore[msgId] = data.sql;
+    html += `<div class="bi-section"><div class="bi-label">💾 生成 SQL</div><pre style="position:relative"><button class="copy-btn" data-copy-sql="${msgId}">复制</button>${escHtml(data.sql)}</pre></div>`;
   }
 
   body.innerHTML = html;
+  body.querySelectorAll('.copy-btn[data-copy-sql]').forEach(btn => {
+    btn.addEventListener('click', () => copyText(btn, sqlTextStore[btn.dataset.copySql] || ''));
+  });
 
   // ECharts 渲染
   if (chart) {
@@ -555,8 +631,7 @@ function renderBIResult(msgId, data, chart, chartConfig) {
   }
 }
 
-async function clearHistory() {
-  try {
+async function clearHistory() {  try {
     await fetch(BASE+'/api/v1/bi/history/'+sessionId(), {method:'DELETE', headers:userHeaders()});
     toast('会话历史已清除', 'success');
   } catch(e) { toast('清除失败', 'error'); }

@@ -18,6 +18,9 @@ def _get_llm() -> ChatOpenAI:
         api_key=settings.DASHSCOPE_API_KEY,
         base_url=settings.BASE_URL_CHAT,
         temperature=0,
+        # 不设超时的话 LLM 挂起会无限占用 SSE 连接与工作协程
+        request_timeout=settings.LLM_REQUEST_TIMEOUT,
+        max_retries=settings.LLM_MAX_RETRIES,
     )
 
 

@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
+from src.nl2sql.llm_text import safe_ainvoke
 from src.nl2sql.prompt_loader import load_prompt
 
 
@@ -29,7 +30,7 @@ async def filter_metrics(state: DataAgentState, ctx: DataAgentContext) -> dict:
         ]
         metrics_yaml = yaml.dump(metrics_list, allow_unicode=True, default_flow_style=False)
 
-        response = await llm.ainvoke([
+        response = await safe_ainvoke(llm, [
             SystemMessage(content=load_prompt("filter_metric_info").replace("{metrics_yaml}", metrics_yaml)),
             HumanMessage(content=state["query"]),
         ])

@@ -31,6 +31,8 @@ class DataAgentContext(TypedDict, total=False):
     writer: Callable[[dict[str, Any]], None]  # 进度/结果推送回调
     role: str = "patient"  # 认证用户角色 → execute_sql 行级过滤
     role_rules: dict | None = None  # 数据源权限规则（bi_datasources.role_rules）
+    sensitive_columns: list[str] | None = None  # 数据源敏感列：文本拦截 + 结果列过滤
+    source_name: str = ""  # 数据源显示名（摘要标注用）
     dept_id: int | None = None  # 医院场景：doctor 所属科室
     owner_domain_id: int | None = None  # ALM 场景：engineer 所属责任域
     business_line: str | None = None  # ALM 场景：business 所属业务线

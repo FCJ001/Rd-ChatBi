@@ -58,6 +58,12 @@ class ValueInfo:
     id: str  # "{column_id}.{value}"
     value: str
     column_id: str
+    # 这条记录从哪来：
+    #   "db"    — 从业务库 SELECT DISTINCT 捞的**真实枚举值**（合法取值，可直接写进 WHERE）
+    #   "alias" — YAML 里手写的**同义词**（用户会这么叫，但不是库里的值，不能当字面量写进 SQL）
+    # ★ 两者语义完全不同，下游（尤其 generate_sql 的 prompt）必须能区分：
+    #   把同义词当成合法值会生成查不到数据的 SQL，把真实值当同义词又会浪费上下文。
+    source: str = "alias"
 
 
 # 重新导出 ColumnMetric

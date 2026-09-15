@@ -60,13 +60,22 @@ async def merge_info(state: DataAgentState, ctx: DataAgentContext) -> dict:
                     if kc.id not in {c.id for c in all_columns}:
                         all_columns.append(kc)
 
-        # 3. 将值挂载到对应列的 examples
+        # 3. 将值挂载到对应列的 examples。
+        #    ★ 必须带上来源标记：source="db" 是业务库里的**真实取值**（可直接
+        #      写进 WHERE），source="alias" 只是 YAML 里手写的**同义词**
+        #      （用户会这么叫，但库里不是这个值）。两者混作一谈会让模型
+        #      把「科室」当真值写出 WHERE name='科室' 这种查空的 SQL。
         col_map = {c.id: c for c in all_columns}
         for v in vals:
-            if v.column_id in col_map:
-                col = col_map[v.column_id]
-                if v.value not in col.examples:
-                    col.examples.append(v.value)
+            col = col_map.get(v.column_id)
+            if col is None:
+                continue
+            label = (
+                f"{v.value}（真实值）" if v.source == "db"
+                else f"{v.value}（同义词，非库中取值）"
+            )
+            if label not in col.examples:
+                col.examples.append(label)
 
         # 4. 按表分组
         table_groups: dict[str, list[ColumnInfo]] = {}

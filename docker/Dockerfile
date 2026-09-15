@@ -23,6 +23,12 @@ COPY prompts/ prompts/
 COPY scripts/ scripts/
 COPY src/ src/
 
+# 非 root 运行 + 日志目录可写
+RUN useradd -m -u 10001 appuser \
+    && mkdir -p /app/logs \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8003
 
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8003"]

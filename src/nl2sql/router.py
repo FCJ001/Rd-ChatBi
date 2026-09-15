@@ -13,7 +13,6 @@
 
 import asyncio
 import json
-
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -24,12 +23,14 @@ from src.core.base_schema import ResponseSchema
 from src.core.deps import UserContext, get_current_user
 from src.core.exceptions import BizException
 from src.core.logger import logger
+from src.core.rate_limit import enforce_rate_limit
 from src.infra.datasources import DataSourceConfig, get_datasource, list_datasources
 from src.infra.datasources import dw_session_factory
 from src.infra.db import AsyncSessionLocal
 from src.infra.es_client import get_es_client
 from src.infra.milvus_client import get_milvus_client
 from src.nl2sql.chart_advisor import recommend_chart
+from src.nl2sql.ctx_store import add_turn, clear, get_context, get_history_payload
 from src.nl2sql.echarts_builder import to_echarts_option
 from src.nl2sql.engine import (
     ConversationContext,
@@ -51,8 +52,11 @@ router = APIRouter(prefix="/api/v1/bi", tags=["ChatBI"])
 # ── Request / Response models ────────────────────────────────────────────
 
 class BIQueryRequest(BaseModel):
-    question: str = Field(..., description="自然语言数据查询")
-    session_id: str = Field(default="default", description="会话ID，同会话多轮下钻")
+    # 长度上限：question 直接进 LLM prompt（防超长请求烧 token/拖垮流水线），
+    # session_id 是字典 key 的一部分（防超长 key 撑内存）
+    question: str = Field(..., max_length=2000, description="自然语言数据查询")
+    session_id: str = Field(default="default", max_length=128,
+                            description="会话ID，同会话多轮下钻")
     with_chart: bool = Field(default=True, description="是否返回图表配置")
 
 
@@ -68,20 +72,11 @@ class BIQueryResponse(BaseModel):
     error: str = ""
 
 
-# ── 对话上下文存储（内存，按 project:session 隔离）────────────────────────
-
-_ctx_store: dict[str, ConversationContext] = {}
-
-
-def _ctx_key(project_id: str, session_id: str) -> str:
-    return f"{project_id}:{session_id}"
-
-
-def _get_or_create_ctx(project_id: str, session_id: str) -> ConversationContext:
-    key = _ctx_key(project_id, session_id)
-    if key not in _ctx_store:
-        _ctx_store[key] = ConversationContext()
-    return _ctx_store[key]
+# ── 对话上下文存储（见 src/nl2sql/ctx_store.py）─────────────────────────
+# backend=redis：跨 worker 共享、重启不丢、TTL 自动过期
+# backend=memory：进程内 dict（开发用）
+# ★ key 必须含 user_id：session_id 是用户输入且默认 "default"，
+#   只按 project+session 隔离会让同项目所有用户共享/互读对话历史。
 
 
 def _user_params(user: UserContext) -> dict:
@@ -110,13 +105,179 @@ async def get_project_dw(
 # ════════════════════════════════════════════════════════════════
 
 @router.get("/datasources", response_model=ResponseSchema[list])
-async def get_datasources():
-    """可用数据源列表"""
+async def get_datasources(user: UserContext = Depends(get_current_user)):
+    """可用数据源列表（需认证：数据源清单属于内部拓扑信息）。
+
+    ★ 同时返回每个数据源的角色清单与候选参数值：不同数据源的角色模型完全
+      不同（医院是 doctor/cashier，汽车是 engineer/business/aftersales），
+      前端若把角色写死，切数据源后必然对不上 —— 所以由后端下发，
+      前端据此动态渲染角色下拉和参数输入。
+
+    ★ 候选值来自 ES 里已有的真实枚举值（值召回那一步顺手就取了），
+      否则用户根本不可能知道「电池系统域」的 owner_domain_id 是 1。
+    """
     sources = await list_datasources()
-    return ResponseSchema(data=[
-        {"code": ds.code, "name": ds.name, "description": ds.description}
-        for ds in sources
-    ])
+    out = []
+    for ds in sources:
+        roles, options = await _role_options(ds)
+        out.append({
+            "code": ds.code,
+            "name": ds.name,
+            "description": ds.description,
+            "roles": roles,
+            "param_options": options,
+        })
+    return ResponseSchema(data=out)
+
+
+async def _role_options(ds) -> tuple[list[dict], dict]:
+    """把 role_rules 摊平成前端好用的角色清单 + 参数候选值。
+
+    角色结构：[{name, label, param?, column?, options?}]
+      - all   → 无参数（admin）
+      - deny  → 无参数，但会被后端拒绝（patient / customer）
+      - param → 需要一个运行时参数，并附上候选值供下拉选择
+      - value → 固定条件，无需用户输入（cashier / aftersales）
+
+    候选值：对带 param 的列，去 ES 值索引取该列的 source="db" 真实值。
+      形如 owner_domain_id 这种数字 ID，用户不可能凭记忆填对；
+      而 ES 里恰好存着「1→电池系统域」这层映射的字典值。
+    """
+    rules = (ds.role_rules or {}).get("roles") or {}
+    roles: list[dict] = []
+    options: dict[str, list[str]] = {}
+
+    for name, rule in rules.items():
+        opt: dict = {"name": name}
+        if rule == "all":
+            opt["label"] = "全量"
+        elif rule == "deny":
+            opt["label"] = "无权限"
+        elif isinstance(rule, dict) and rule.get("param"):
+            opt["label"] = f"按 {rule['param']}"
+            opt["param"] = rule["param"]
+            opt["column"] = rule.get("column", "")
+            opts = await _param_options(ds, rule)
+            if opts:
+                opt["options"] = opts
+                options.setdefault(rule["param"], opts)
+        elif isinstance(rule, dict) and rule.get("value"):
+            opt["label"] = f"限定 {rule['value']}"
+        else:
+            opt["label"] = "规则不完整（会被拒绝）"
+        roles.append(opt)
+
+    return roles, options
+
+
+async def _param_options(ds, rule: dict) -> list[dict]:
+    """取某列的真实枚举值作为候选（{value, label}），供前端渲染下拉。
+
+    ★ 两个坑：
+      ① role_rules 里的 column 是**裸列名**（owner_domain_id），而 ES 存的是
+         全限定名（alm_issues.owner_domain_id）—— 必须按后缀匹配。
+      ② 外键列存的是数字 ID（1..9），用户要看的是名字（电池系统域），而请求头
+         里必须传 ID。两类信息存在**两列**里。这里按「排序后的位置」把 ID 和
+         维表可读名对齐拼起来；拼不上就退回只用 ID，功能不受影响。
+    取不到就返回空，前端退化成自由输入。
+    """
+    try:
+        from src.infra.es_client import get_es_client
+
+        es = await get_es_client()
+        column = rule.get("column") or ""
+        if not column:
+            return []
+        index = f"chatbi_{ds.es_prefix}_values"
+
+        async def _db_values_of(cid: str) -> list[str]:
+            # ★ 用 match 而非 term：column_id 在不同写入路径下格式不一致
+            #   （元数据落库写全限定名 `alm_issues.owner_domain_id`，
+            #    link_fk_labels 补的是裸名 `owner_domains.name`）。
+            #   match 走分词，两种写法都能命中，不依赖命名约定。
+            res = await es.search(
+                index=index,
+                body={"query": {"bool": {"must": [
+                    {"match": {"column_id": cid}}, {"term": {"source": "db"}}]}},
+                    "size": 200},
+            )
+            return [str(h["_source"]["value"]) for h in res["hits"]["hits"]
+                    if h["_source"].get("value") is not None]
+
+        # ① column 可能是裸列名，先在全限定名里找匹配的那一列
+        full = column if "." in column else await _resolve_column(ds, column)
+        ids = await _db_values_of(full)
+        if not ids:
+            return []
+
+        # ② 附上可读名。
+        #    ★ 不能靠「排序后按位置对齐」—— 事实表里可能只出现了部分维表值
+        #      （alm_issues 只用到 7 个域，owner_domains 有 9 个），数量不等就错位。
+        #      正确做法是**按 ID 关联**：维表那列也带 enum_label=主键，
+        #      用 ID 做键去查名字。
+        id_to_name = await _dim_names_by_id(ds, bare=column, full=full)
+        return [{"value": v, "label": id_to_name.get(v, v)}
+                for v in sorted(ids, key=_num_or_str)]
+    except Exception as e:
+        logger.warning(f"[datasources] 取 {rule.get('param')} 候选值失败: {e}")
+        return []
+
+
+async def _dim_names_by_id(ds, bare: str, full: str) -> dict[str, str]:
+    """可读名，按 ID 索引：{"1": "电池系统域", ...}。
+
+    ★ 不做任何表名推导。之前试过「从外键列名猜维表名」（owner_domain_id →
+       owner_domains.name），单复数/命名约定一变就错，而且事实表和维表的前缀
+       压根对不上（alm_issues vs owner_domains）。
+       现在直接取索引里**所有带 enum_label 的记录** —— 那些正是
+       scripts/link_fk_labels.py 用真 JOIN 建出来的 (ID ↔ 名称) 对应关系。
+      记录数很少（每张维表几十条），一次取完即可。
+    """
+    from src.infra.es_client import get_es_client
+
+    try:
+        es = await get_es_client()
+        res = await es.search(
+            index=f"chatbi_{ds.es_prefix}_values",
+            body={"query": {"exists": {"field": "enum_label"}}, "size": 500},
+        )
+        out: dict[str, str] = {}
+        for h in res["hits"]["hits"]:
+            src = h["_source"]
+            # ★ ES 里 value=名称、enum_label=ID（link_fk_labels.py 补出来的一对）。
+            #   所以「用 ID 查名称」就是：以 enum_label 为键、value 为值。
+            #   反着取会得到「用名字查 ID」，那对下拉没用。
+            if src.get("enum_label"):
+                out[str(src["enum_label"])] = str(src["value"])
+        return out
+    except Exception as e:
+        logger.warning(f"[datasources] 取维表名失败: {e}")
+        return {}
+
+
+async def _resolve_column(ds, bare: str) -> str:
+    """裸列名 → 全限定列名（ES 里存的是 `表.列`）。
+
+    同一裸名可能出现在多张表（如多张表都有 status），取第一个命中的；
+    行级过滤的 column 通常只在事实表上，实际不会歧义。
+    """
+    from src.infra.es_client import get_es_client
+
+    es = await get_es_client()
+    res = await es.search(
+        index=f"chatbi_{ds.es_prefix}_values",
+        body={"query": {"bool": {"must": [
+            {"wildcard": {"column_id": f"*.{bare}"}},
+            {"term": {"source": "db"}}]}}, "size": 1,
+            "_source": ["column_id"]},
+    )
+    hits = res["hits"]["hits"]
+    return hits[0]["_source"]["column_id"] if hits else bare
+
+
+def _num_or_str(v: str):
+    """数字串按数值排序，其余按字符串 —— 否则 '10' 会排在 '2' 前面"""
+    return (0, int(v)) if v.lstrip("-").isdigit() else (1, v)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -127,12 +288,14 @@ async def get_datasources():
 async def bi_query(
     req: BIQueryRequest,
     user: UserContext = Depends(get_current_user),
+    # 限流声明在 dw 之前：FastAPI 按参数顺序解析依赖，被限流的请求不占业务库连接
+    _: None = Depends(enforce_rate_limit),
     dw: tuple[AsyncSession, DataSourceConfig] = Depends(get_project_dw),
 ):
     """自然语言数据查询，返回 SQL + 数据表 + 图表 + 摘要"""
     db, ds = dw
     llm = get_llm()
-    ctx = _get_or_create_ctx(user.project_id, req.session_id)
+    ctx = await get_context(user.user_id, user.project_id, req.session_id)
 
     # 按数据源动态生成 schema（多数据源不再硬编码表结构）
     schema = await _build_schema(ds)
@@ -149,6 +312,7 @@ async def bi_query(
         params=params,
         schema=schema,
         source_name=ds.name,
+        sensitive_columns=ds.sensitive_columns,
     )
 
     resp = BIQueryResponse(
@@ -173,6 +337,7 @@ async def bi_query(
             resp.chart = to_echarts_option(result.data, chart_config)
         except Exception as e:
             logger.warning(f"图表生成失败: {e}")
+
 
     return ResponseSchema(data=resp)
 
@@ -239,25 +404,34 @@ async def _build_pipeline_context(
 async def bi_query_stream(
     req: BIQueryRequest,
     user: UserContext = Depends(get_current_user),
+    # 限流声明在 dw 之前：被限流的请求不占业务库连接
+    _: None = Depends(enforce_rate_limit),
     dw: tuple[AsyncSession, DataSourceConfig] = Depends(get_project_dw),
 ):
     """自然语言数据查询 — SSE 流式返回各节点执行状态 + 最终结果（含图表）"""
     dw_db, ds = dw
     ctx, meta_db = await _build_pipeline_context(ds, dw_db)
-
-    # 认证用户角色 + 数据源权限规则 → execute_sql 节点行级过滤
-    ctx["role"] = user.role
-    ctx["role_rules"] = ds.role_rules
-    ctx["source_name"] = ds.name
-    ctx.update(_user_params(user))
-
-    # ② 多轮上下文判断：追问 → 改写为独立完整问题；无历史 → 全新查询
-    conv_ctx = _get_or_create_ctx(user.project_id, req.session_id)
     try:
-        question = await resolve_question(req.question, ctx["llm"], conv_ctx)
-    except Exception as e:
-        logger.warning(f"多轮改写失败，使用原始问题: {e}")
-        question = req.question
+        # 认证用户角色 + 数据源权限规则 → execute_sql 节点行级过滤
+        ctx["role"] = user.role
+        ctx["role_rules"] = ds.role_rules
+        ctx["source_name"] = ds.name
+        ctx["sensitive_columns"] = ds.sensitive_columns
+        ctx.update(_user_params(user))
+
+        # ② 多轮上下文判断：追问 → 改写为独立完整问题；无历史 → 全新查询
+        conv_ctx = await get_context(user.user_id, user.project_id, req.session_id)
+        try:
+            question = await resolve_question(req.question, ctx["llm"], conv_ctx)
+        except Exception as e:
+            logger.warning(f"多轮改写失败，使用原始问题: {e}")
+            question = req.question
+
+    except Exception:
+        # 流式响应开始前出错：meta_db 的关闭职责还没移交给 event_stream 的
+        # finally，必须在这里关掉，否则连接泄漏
+        await meta_db.close()
+        raise
 
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
@@ -334,17 +508,26 @@ async def bi_query_stream(
 
             # ⑧ 成功结果写入会话历史（供多轮追问使用）
             if last_result and last_result.get("result_data"):
-                conv_ctx.add(QueryResult(
+                await add_turn(user.user_id, user.project_id, req.session_id, QueryResult(
                     question=question,
                     sql=last_result.get("result_sql", ""),
-                    data=last_result.get("result_data", []),
-                    columns=last_result.get("result_columns", []),
                     row_count=last_result.get("result_row_count", 0),
                     summary=last_result.get("result_summary", ""),
                 ))
         finally:
-            await task  # ensure pipeline completes
-            await meta_db.close()
+            # 客户端断连（GeneratorExit）时取消流水线：await 未取消的 task
+            # 会把剩余的多次 LLM 调用全部跑完才退出，白烧钱。
+            # 正常跑完的情况下 cancel() 是 no-op，await 直接返回。
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # loguru 语法：exc_info=True 是 stdlib 风格，loguru 会静默丢 traceback
+                logger.opt(exception=True).warning("SSE 流水线任务收尾异常")
+            finally:
+                await meta_db.close()
 
     return StreamingResponse(
         event_stream(),
@@ -366,19 +549,12 @@ async def get_history(
     session_id: str,
     user: UserContext = Depends(get_current_user),
 ):
-    """获取会话的 NL2SQL 对话历史"""
-    ctx = _ctx_store.get(_ctx_key(user.project_id, session_id))
-    sql_history = []
-    if ctx:
-        for r in ctx.history:
-            sql_history.append({
-                "question": r.question,
-                "sql": r.sql,
-                "row_count": r.row_count,
-                "summary": r.summary[:200] if r.summary else "",
-                "success": r.success,
-                "error": r.error,
-            })
+    """获取会话的 NL2SQL 对话历史（按 user:project:session 隔离，只能看自己的）"""
+    payload = await get_history_payload(user.user_id, user.project_id, session_id)
+    sql_history = [
+        {**r, "summary": (r.get("summary") or "")[:200]}
+        for r in payload
+    ]
 
     return ResponseSchema(data={
         "session_id": session_id,
@@ -392,6 +568,7 @@ async def clear_history(
     session_id: str,
     user: UserContext = Depends(get_current_user),
 ):
-    """清除会话历史"""
-    _ctx_store.pop(_ctx_key(user.project_id, session_id), None)
+    """清除会话历史（只能清自己的）"""
+    await clear(user.user_id, user.project_id, session_id)
     return ResponseSchema(data={"session_id": session_id, "status": "cleared"})
+

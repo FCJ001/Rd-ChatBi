@@ -1,0 +1,75 @@
+{
+  "description": "NL2SQL 执行准确率评测案例（分层）。golden_sql 与 LLM 生成 SQL 都在同一只读连接上执行，按结果集等价（exec-match，行序无关、数值 4 位舍入）判定对错。分层维度：category（查询形态）× difficulty。跑法：python eval/run_nl2sql_eval.py --live --project rd_agent；CI 门禁跑默认离线模式（校验案例结构 + golden SQL 必须能过安全层）。",
+  "cases": [
+    {
+      "id": "N1",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "目前一共有多少个未关闭的问题单？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM alm_issues WHERE status NOT IN ('closed', 'verified')"
+    },
+    {
+      "id": "N2",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "业务线 ev 的严重级别为 critical 的问题有多少个？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM alm_issues WHERE business_line = 'ev' AND severity = 'critical'"
+    },
+    {
+      "id": "N3",
+      "category": "分组统计",
+      "difficulty": "medium",
+      "question": "按业务线统计各自的问题单总数。",
+      "golden_sql": "SELECT business_line, COUNT(*) AS cnt FROM alm_issues GROUP BY business_line ORDER BY business_line"
+    },
+    {
+      "id": "N4",
+      "category": "分组统计",
+      "difficulty": "medium",
+      "question": "每个问题状态下各有多少问题单？",
+      "golden_sql": "SELECT status, COUNT(*) AS cnt FROM alm_issues GROUP BY status ORDER BY status"
+    },
+    {
+      "id": "N5",
+      "category": "排序TopN",
+      "difficulty": "medium",
+      "question": "哪个车型的问题最多？给出前 3 名。",
+      "golden_sql": "SELECT model_code, COUNT(*) AS cnt FROM alm_issues WHERE model_code IS NOT NULL GROUP BY model_code ORDER BY cnt DESC LIMIT 3"
+    },
+    {
+      "id": "N6",
+      "category": "排序TopN",
+      "difficulty": "medium",
+      "question": "来源为 aftersales 的问题单里，最近创建的 5 个单号是什么？",
+      "golden_sql": "SELECT issue_no FROM alm_issues WHERE source = 'aftersales' ORDER BY created_at DESC LIMIT 5"
+    },
+    {
+      "id": "N7",
+      "category": "时间窗口",
+      "difficulty": "hard",
+      "question": "最近 30 天创建了多少个问题单？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM alm_issues WHERE created_at >= NOW() - INTERVAL '30 days'"
+    },
+    {
+      "id": "N8",
+      "category": "时间窗口",
+      "difficulty": "hard",
+      "question": "按月统计 2026 年每月的提单量。",
+      "golden_sql": "SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, COUNT(*) AS cnt FROM alm_issues WHERE created_at >= '2026-01-01' AND created_at < '2027-01-01' GROUP BY 1 ORDER BY 1"
+    },
+    {
+      "id": "N9",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "按责任域统计问题单数量，输出责任域名称和数量。",
+      "golden_sql": "SELECT od.name AS domain_name, COUNT(i.id) AS cnt FROM alm_issues i JOIN owner_domains od ON od.id = i.owner_domain_id GROUP BY od.name ORDER BY od.name"
+    },
+    {
+      "id": "N10",
+      "category": "明细查询",
+      "difficulty": "easy",
+      "question": "列出所有 blocker 级别问题的标题。",
+      "golden_sql": "SELECT title FROM alm_issues WHERE severity = 'blocker' LIMIT 100"
+    }
+  ]
+}

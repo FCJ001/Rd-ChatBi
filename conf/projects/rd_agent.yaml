@@ -12,6 +12,8 @@ datasource:
   dsn: postgresql+asyncpg://rdagent:rdagent123@localhost:5432/rd_agent
   milvus_prefix: agent
   es_prefix: agent
+  # 敏感列：物理表里存在但元数据故意不定义（Prompt 层防线）
+  sensitive_columns: [vin, reporter_id, reporter_phone, customer_name]
   role_rules:
     default: deny
     roles:
@@ -61,7 +63,7 @@ tables:
       - name: status
         type: VARCHAR(20)
         role: dimension
-        description: 问题状态，枚举值固定为英文：open(未处理)/in_progress(处理中)/resolved(已解决)/closed(已关闭)/verified(已验证)，过滤时必须用英文值如 status='closed'
+        description: 问题状态，枚举值固定为英文：open(未处理)/analyzing(分析中)/fixing(修复中)/closed(已关闭)/verified(已验证)，过滤时必须用英文值如 status='closed'
         alias: ["状态", "关闭", "未关闭", "已关闭"]
         sync: true
       - name: severity
@@ -89,6 +91,12 @@ tables:
         role: foreign_key
         description: 责任域ID，维表 owner_domains.id → owner_domains.name（域名称，如 电池系统域）；按域分组/展示时 JOIN owner_domains 取 name
         alias: ["域", "责任方", "模块"]
+        # ★ 标了 sync 才会进 ES 值索引。这里是「行级权限的取值来源」，
+        #   必须有 —— 否则按 owner_domain_id 过滤时无从知道有哪些合法 ID。
+        #   ★ 故意不写 enum_source：那一列存的是数字 ID，DISTINCT 出来就是
+        #     1..9，正是行级过滤要注入的值；可读名由维表 owner_domains.name
+        #     以同样的 ID 为键提供（前端用它做下拉的显示文本）。
+        sync: true
       - name: external_ref
         type: VARCHAR(100)
         role: dimension

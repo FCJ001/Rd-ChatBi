@@ -87,7 +87,6 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
     """记录每个 HTTP 请求的计数与耗时（QPS / p95 延迟来源）。"""
 
     async def dispatch(self, request: Request, call_next):
-        method, path = request.method, request.url.path
         start = time.perf_counter()
         status = 500  # 异常时按 5xx 记录
         try:
@@ -96,5 +95,15 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed = time.perf_counter() - start
-            HTTP_REQUEST_DURATION.labels(method=method, path=path).observe(elapsed)
-            HTTP_REQUESTS.labels(method=method, path=path, status=status).inc()
+            path = _metric_path(request)
+            HTTP_REQUEST_DURATION.labels(method=request.method, path=path).observe(elapsed)
+            HTTP_REQUESTS.labels(method=request.method, path=path, status=status).inc()
+
+
+def _metric_path(request: Request) -> str:
+    """指标 path 标签用路由模板（/history/{session_id}）而不是原始 URL ——
+    原始 URL 会让每个 session_id 变成一个新标签，Prometheus 基数无上限。
+    未匹配到路由（404 扫描等）统一归入 "unmatched"。"""
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    return template or "unmatched"

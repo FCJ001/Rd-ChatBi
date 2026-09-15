@@ -16,6 +16,9 @@ python-multipart==0.0.22
 sse-starlette==3.3.4
 httpx==0.28.1
 
+# ---------------- 认证 ----------------
+pyjwt==2.10.1
+
 # ---------------- 配置与日志 ----------------
 pydantic==2.12.5
 pydantic-settings==2.13.1
@@ -51,8 +54,7 @@ dashscope==1.25.16
 
 # ---------------- 数据处理 / 图表 ----------------
 pandas==2.3.3
-# plotly 已移除：服务端图表渲染改由前端 ECharts 承担（echarts_builder）
-kaleido==0.2.1
+# plotly/kaleido 已移除：服务端图表渲染改由前端 ECharts 承担（echarts_builder）
 
 # ---------------- NL2SQL（AST 层 SQL 注入）----------------
 sqlglot==26.17.0

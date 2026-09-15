@@ -2,12 +2,14 @@
 # Node ②a — LLM 扩展关键词 + Milvus 向量检索相关列
 # ============================================================
 
+import asyncio
 import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
+from src.nl2sql.llm_text import safe_ainvoke
 from src.nl2sql.prompt_loader import load_prompt
 
 
@@ -24,7 +26,7 @@ async def recall_columns(state: DataAgentState, ctx: DataAgentContext) -> dict:
         keywords = state["keywords"]
 
         # LLM 扩展关键词
-        response = await llm.ainvoke([
+        response = await safe_ainvoke(llm, [
             SystemMessage(content=load_prompt("extend_keywords_for_column_recall")),
             HumanMessage(content=state["query"]),
         ])
@@ -38,12 +40,14 @@ async def recall_columns(state: DataAgentState, ctx: DataAgentContext) -> dict:
         # 合并关键词
         all_keywords = list(dict.fromkeys(keywords + extra_keywords))
 
-        # 向量检索
+        # 向量检索：批量向量化（一次 HTTP 而不是每关键词一次）；
+        # ★ aembed_* 走 executor、MilvusClient 是同步 SDK 用 to_thread 包一层 ——
+        #   直接同步调用会阻塞整个事件循环，并发下所有请求互相卡
+        vecs = await embedding_model.aembed_documents(all_keywords)
         retrieved: dict[str, any] = {}
-        for kw in all_keywords:
+        for kw, vec in zip(all_keywords, vecs):
             try:
-                vec = embedding_model.embed_query(kw)
-                cols = repo.search(vec, top_k=5, threshold=0.6)
+                cols = await asyncio.to_thread(repo.search, vec, top_k=5, threshold=0.6)
                 for c in cols:
                     if c.id not in retrieved:
                         retrieved[c.id] = c

@@ -5,6 +5,7 @@
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
 from src.nl2sql.prompt_loader import load_prompt
@@ -44,17 +45,12 @@ async def generate_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
         system_prompt = system_prompt.replace("{quarter}", date_info.get("quarter", ""))
         system_prompt = system_prompt.replace("{version}", db_info.get("version", ""))
 
-        response = await llm.ainvoke([
+        response = await safe_ainvoke(llm, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=state["query"]),
         ])
 
-        sql = response.content.strip()
-        if "```" in sql:
-            sql = sql.split("```")[1]
-            if sql.startswith("sql"):
-                sql = sql[3:]
-            sql = sql.strip()
+        sql = strip_code_fence(response.content)
 
         from src.core.logger import logger
         logger.info(f"[generate_sql] 生成 SQL ({len(sql)} 字符): {sql[:200]}")

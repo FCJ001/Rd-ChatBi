@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from loguru import logger
 
+from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence
 from src.nl2sql.prompts import CHART_ADVISOR_PROMPT
 
 
@@ -36,13 +37,11 @@ async def recommend_chart(
         row_count=len(data),
     )
 
-    response = await llm.ainvoke([SystemMessage(content=prompt)])
+    response = await safe_ainvoke(llm, [SystemMessage(content=prompt)])
     content = response.content.strip()
 
     try:
-        if "```" in content:
-            content = content.split("```")[1].lstrip("json").strip()
-        return json.loads(content)
+        return json.loads(strip_code_fence(content))
     except Exception as e:
         logger.warning(f"图表推荐解析失败: {e}")
         return {"chart_type": "table", "title": "查询结果", "description": ""}

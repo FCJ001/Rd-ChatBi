@@ -11,15 +11,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from src.core.config import get_settings
 from src.core.logger import logger
 from src.infra.db import AsyncSessionLocal
+from src.infra.pool import get_engine
 
-# 进程级缓存（引擎与配置一旦加载即复用；注册新数据源需重启或调用 clear）
-_engines: dict[str, AsyncEngine] = {}
+# 进程级缓存：数据源配置一旦加载即复用（注册新数据源需重启或调用 clear）
+# ★ 注意 engine **不在这里缓存**：它按 event loop 分区，缓存在 pool.py 里，
+#   这里缓存会拿到别的 loop 的 engine（asyncpg 会直接报错）。
 _ds_cache: dict[str, "DataSourceConfig | None"] = {}
 
 
@@ -33,6 +34,8 @@ class DataSourceConfig:
     milvus_prefix: str = "chatbi"
     es_prefix: str = "chatbi"
     role_rules: dict[str, Any] = field(default_factory=dict)
+    # 物理存在但元数据故意隐藏的敏感列：SQL 文本拦截 + 执行层结果列过滤
+    sensitive_columns: list[str] = field(default_factory=list)
     description: str = ""
     enabled: bool = True
 
@@ -76,21 +79,12 @@ def clear_datasource_cache() -> None:
 
 
 def get_dw_engine(code: str) -> AsyncEngine:
-    """按数据源编码取只读业务库 engine（进程级缓存）"""
-    if code not in _engines:
-        # get_datasource 是 async，这里同步读缓存；未加载时回退默认 demo 配置
-        config = _ds_cache.get(code)
-        if config is None:
-            raise RuntimeError(f"数据源 {code} 未加载（先 await get_datasource）")
-        settings = get_settings()
-        _engines[code] = create_async_engine(
-            config.dsn,
-            echo=settings.APP_DEBUG,
-            poolclass=NullPool,   # ★ 不跨 event loop 复用连接
-            pool_pre_ping=True,
-        )
-        logger.info(f"[datasources] 创建业务库 engine: {code}")
-    return _engines[code]
+    """按数据源编码取只读业务库 engine（按 event loop 分区池化，见 infra/pool.py）"""
+    config = _ds_cache.get(code)
+    if config is None:
+        # get_datasource 是 async，这里同步读缓存；未加载说明调用顺序错了
+        raise RuntimeError(f"数据源 {code} 未加载（先 await get_datasource）")
+    return get_engine(config.dsn, f"dw:{code}")
 
 
 def dw_session_factory(code: str) -> async_sessionmaker[AsyncSession]:
@@ -117,6 +111,8 @@ def _to_config(row) -> DataSourceConfig:
         milvus_prefix=row.milvus_prefix or "chatbi",
         es_prefix=row.es_prefix or "chatbi",
         role_rules=row.role_rules or {},
+        # getattr：迁移前旧库没有该列时不至于整体不可用
+        sensitive_columns=list(getattr(row, "sensitive_columns", None) or []),
         description=row.description or "",
         enabled=bool(row.enabled),
     )

@@ -2,8 +2,12 @@
 # SQL 安全校验 — 四层防线
 #
 # 1. Prompt 层：SCHEMA_DESC 人工裁剪（敏感字段不在元数据中定义）
-# 2. 正则层：FORBIDDEN_PATTERNS
+# 2. 校验层：sqlglot 语句级解析 —— SELECT-only（含 SELECT INTO / 危险函数拒绝）
+#            + FORBIDDEN_PATTERNS 兜底（跑在去注释文本上）
+#            + 敏感列 AST 检查（数据源 sensitive_columns，列引用级精确匹配）
 # 3. 执行层：SELECT-only + LIMIT 强制覆盖 + timeout 10s
+#            + filter_result_columns 结果列过滤（SELECT * 不写列名，
+#              能穿文本层，靠这一层把敏感列从结果集里剔除）
 # 4. 数据库层：只读副本
 #
 # ★ LIMIT 在 AST 层强制覆盖：语句内所有 LIMIT/FETCH 字面量超过上限的
@@ -17,10 +21,14 @@
 # ============================================================
 
 import re
+from collections.abc import Collection
 
 import sqlglot
 import sqlglot.expressions as exp
 
+# 旧版兜底规则：数据源未配置 sensitive_columns 时仍生效（向后兼容）。
+# 新数据源应把敏感列配到 conf/projects/{code}.yaml 的 datasource.sensitive_columns，
+# 走 validate_sql 的动态拦截（见 SENSITIVE 检查），不再改这里。
 FORBIDDEN_PATTERNS = [
     re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b", re.IGNORECASE),
     re.compile(r"\b(outpatient_visits|inpatient_records)\b[^;]*\b(patient_name|patient_phone|id_card|patient_no)\b", re.IGNORECASE),
@@ -29,6 +37,24 @@ FORBIDDEN_PATTERNS = [
 
 # 行数硬上限：LLM 生成/用户注入的任何 LIMIT 都不会超过它
 MAX_ROW_LIMIT = 100
+
+# 危险函数黑名单：都是"合法 SELECT"但带副作用/越权读的函数，
+# 语句级 SELECT-only 拦不住它们。前缀族单独列出（dblink_* 一大串）。
+FORBIDDEN_FUNCTIONS = frozenset({
+    # 文件系统 / 服务端文件读
+    "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file",
+    # 会话/服务控制（set_config 能改 default_transaction_read_only，
+    # 尝试关掉第四层只读防线；pg_sleep 是资源放大）
+    "set_config", "setseed", "pg_sleep", "pg_sleep_for", "pg_sleep_until",
+    "pg_terminate_backend", "pg_cancel_backend",
+    "pg_reload_conf", "pg_rotate_logfile", "pg_logdir_ls",
+    # 备份 / WAL / 复制（需高权限，越权面）
+    "pg_backup_start", "pg_backup_stop", "pg_switch_wal", "pg_walfile_name",
+    "pg_create_restore_point", "pg_start_backup", "pg_stop_backup",
+    # 大对象读写（lo_import 可把服务端文件搬进库）
+    "lo_import", "lo_export", "lo_get", "lo_put", "lo_creat", "lo_create", "lo_unlink",
+})
+FORBIDDEN_FUNCTION_PREFIXES = ("dblink", "pg_advisory")
 
 # 列名（含 table.column 形式）合法标识符 —— role_rules 配置也当不可信输入校验
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -68,6 +94,58 @@ def _remove_trailing_line_comment(sql: str) -> str:
     return sql
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """去掉 SQL 文本里的 `--` 行注释与 `/* */` 块注释（PG 支持嵌套块注释），
+    字符串字面量内的注释符原样保留（引号成对转义已处理）。
+
+    供文本层正则检查使用：`-- 尾注` 延续敏感词会误伤合法查询，
+    反过来依赖注释分割关键词的混淆写法在 PG 里解析不出合法标识符，
+    但正则跑在去注释文本上可以同时消掉这两类干扰。"""
+    out: list[str] = []
+    in_str: str | None = None
+    depth = 0  # 嵌套块注释深度
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if in_str:
+            out.append(ch)
+            if ch == in_str:
+                if i + 1 < n and sql[i + 1] == in_str:  # '' / "" 转义引号
+                    out.append(sql[i + 1])
+                    i += 2
+                    continue
+                in_str = None
+            i += 1
+            continue
+        if depth:
+            if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+                depth += 1
+                i += 2
+                continue
+            if ch == "*" and i + 1 < n and sql[i + 1] == "/":
+                depth -= 1
+                i += 2
+                continue
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_str = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            while i < n and sql[i] != "\n":  # 保留换行，避免相邻 token 粘连
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            depth = 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _clamp_row_limit(tree: exp.Expression) -> None:
     """把语句内所有 LIMIT / FETCH FIRST 的行数压到 MAX_ROW_LIMIT。
 
@@ -95,15 +173,57 @@ def _clamp_row_limit(tree: exp.Expression) -> None:
                 fetch.set("count", exp.Literal.number(MAX_ROW_LIMIT))
 
 
-def validate_sql(sql: str) -> tuple[bool, str]:
+def _references_sensitive_column(tree: exp.Expression, names: Collection[str]) -> bool:
+    """AST 层敏感列检查：遍历所有 Column 节点比对列名（大小写不敏感）。
+
+    比文本正则精确 —— 只匹配真实列引用，注释里提到敏感列名不会误伤；
+    也是文本层的兜底升级：任何绕过文本正则的写法（未来方言 tokenizer
+    变化、引号变体等）只要能解析成 AST，列名必然暴露在 Column 节点上。
+    注意 `SELECT *` 不含 Column 节点，仍由执行层 filter_result_columns 兜底。"""
+    blocked = {c.casefold() for c in names if c}
+    if not blocked:
+        return False
+    return any(col.name.casefold() in blocked for col in tree.find_all(exp.Column))
+
+
+def _forbidden_function_name(tree: exp.Expression) -> str | None:
+    """AST 层危险函数检查。PG 的非内置函数在 sqlglot 里解析为
+    exp.Anonymous（node.name 即函数名），内置安全函数（COUNT/SUM…）
+    是具名 Func 类，天然不在黑名单里。命中返回函数名，未命中返回 None。"""
+    for node in tree.walk():
+        name: str | None = None
+        if isinstance(node, exp.Anonymous):
+            name = node.name
+        elif isinstance(node, exp.Func):
+            name = node.sql_name()
+        if not name:
+            continue
+        norm = name.casefold().strip('"')
+        if norm in FORBIDDEN_FUNCTIONS:
+            return name
+        if any(norm.startswith(p) for p in FORBIDDEN_FUNCTION_PREFIXES):
+            return name
+    return None
+
+
+def validate_sql(
+    sql: str,
+    sensitive_columns: Collection[str] | None = None,
+) -> tuple[bool, str]:
     """校验 SQL 安全性。返回 (is_valid, validated_sql_or_error)
 
     用 sqlglot 做语句级解析，彻底替代 startswith("SELECT")：
     - ★ 强制单条语句：asyncpg prepared statement 不支持多命令，且多语句是注入面。
        LLM 面对复合提问可能用分号拼接多条 SELECT，直接拒绝并给出明确提示。
-    - 语句类型必须是 SELECT（含 WITH ... SELECT，sqlglot 中 WITH 挂在 Select 节点上）。
+    - 语句类型必须是 SELECT（含 WITH ... SELECT，sqlglot 中 WITH 挂在 Select 节点上）；
+       SELECT ... INTO 会建表，同样拒绝。
+    - ★ 危险函数拦截：pg_read_file / set_config / dblink / lo_import 等
+       "合法 SELECT" 形态的副作用函数，AST 层按函数名拒绝。
     - ★ LIMIT 强制覆盖：不管原语句写没写、写多大，返回的 SQL 行数上限必为
        MAX_ROW_LIMIT —— 返回值是重写后的 SQL，调用方必须执行返回值而非原始 SQL。
+    - ★ sensitive_columns（数据源敏感列，来自 bi_datasources）：AST 列引用 +
+       去注释文本双层匹配，显式引用即拒绝。注意这只挡"写了列名"的查询；
+      `SELECT *` 不含列名，由执行层的 filter_result_columns 兜底（两层缺一不可）。
     """
     stripped = sql.strip().rstrip(";")
     stripped = _remove_trailing_line_comment(stripped)
@@ -123,10 +243,22 @@ def validate_sql(sql: str) -> tuple[bool, str]:
     tree = statements[0]
     if not isinstance(tree, exp.Select):
         return False, "只允许 SELECT 查询"
+    if tree.args.get("into") is not None:
+        return False, "只允许 SELECT 查询"
 
+    # 文本层检查跑在去注释 SQL 上：注释里的敏感词不再误伤合法查询
+    comment_free = _strip_sql_comments(stripped)
     for pattern in FORBIDDEN_PATTERNS:
-        if pattern.search(stripped):
+        if pattern.search(comment_free):
             return False, "查询包含禁止的操作或字段"
+
+    if sensitive_columns:
+        if _references_sensitive_column(tree, sensitive_columns):
+            return False, "查询包含敏感字段，已被拦截"
+
+    func = _forbidden_function_name(tree)
+    if func:
+        return False, f"查询包含不允许调用的函数 {func}"
 
     _clamp_row_limit(tree)
     if tree.args.get("limit") is None:
@@ -181,9 +313,17 @@ def apply_role_filter(
                 return False, f"角色 {role} 的过滤参数 {rule['param']} 不合法，已拒绝查询"
         elif rule.get("value"):
             condition = rule["value"]
+        else:
+            # 规则不完整（漏配 param/value，或空 dict）→ fail-closed。
+            # 配置笔误不能等价于权限全开
+            return False, f"角色 {role} 的过滤规则配置不完整，已拒绝查询"
 
     if condition:
-        sql = _inject_where_ast(sql, condition)
+        injected = _inject_where_ast(sql, condition)
+        if injected is None:
+            # AST 注入失败 → fail-closed 拒绝，绝不能放行未过滤的 SQL
+            return False, "行级过滤条件注入失败，已拒绝查询"
+        sql = injected
     return True, sql
 
 
@@ -214,11 +354,16 @@ def _resolve_role_rule(role: str, role_rules: dict | None) -> str | dict | None:
     return roles.get(role, role_rules.get("default", "deny"))
 
 
-def _inject_where_ast(sql: str, condition: str | exp.Expression) -> str:
+def _inject_where_ast(sql: str, condition: str | exp.Expression) -> str | None:
     """★ sqlglot AST 层注入 WHERE，不靠字符串替换。
     condition 可传表达式 AST（参数规则，已编码）或 SQL 片段字符串（value 规则，受信配置）。
-    彻底解决医疗版 str.replace("WHERE", ...) 在子查询/CTE 中注入错误位置的问题。
-    同时检测条件列名是否已存在，避免重复注入。"""
+
+    ★ 无条件 AND 注入：即使 SQL 里已经出现了同名列（LLM 可能被用户诱导写出
+      `department_id = 7` 这样的任意值），也必须叠加授权值条件——
+      "列名出现过" ≠ "过滤值正确"，去重跳过就是越权通道。
+      重复 AND 同列不同值只会让结果为空集（deny 语义），是安全方向的失败。
+      注入失败返回 None（调用方 fail-closed 拒绝），不做字符串拼接降级。
+    """
     try:
         tree = sqlglot.parse_one(sql, dialect="postgres")
         if isinstance(condition, exp.Expression):
@@ -226,14 +371,7 @@ def _inject_where_ast(sql: str, condition: str | exp.Expression) -> str:
         else:
             condition_expr = sqlglot.parse_one(condition, dialect="postgres")
 
-        # ★ 去重：如果 WHERE 里已经有同名列，跳过注入
-        col_name = _extract_column_name(condition_expr)
         where = tree.find(exp.Where)
-        if where and col_name:
-            existing_cols = {c.name for c in where.find_all(exp.Column) if hasattr(c, 'name')}
-            if col_name in existing_cols:
-                return _fix_sqlglot_output(tree.sql(dialect="postgres"))
-
         if where:
             where.set("this", exp.And(this=where.this, expression=condition_expr))
         else:
@@ -241,19 +379,7 @@ def _inject_where_ast(sql: str, condition: str | exp.Expression) -> str:
 
         return _fix_sqlglot_output(tree.sql(dialect="postgres"))
     except Exception:
-        # sqlglot 解析失败则降级为简单注入
-        upper = sql.upper()
-        if "WHERE" in upper:
-            idx = upper.index("WHERE") + 5
-            return sql[:idx] + f" {condition} AND" + sql[idx:]
-        elif "LIMIT" in upper:
-            idx = upper.index("LIMIT")
-            return sql[:idx] + f" WHERE {condition} " + sql[idx:]
-        elif "ORDER" in upper:
-            idx = upper.index("ORDER")
-            return sql[:idx] + f" WHERE {condition} " + sql[idx:]
-        else:
-            return f"SELECT * FROM ({sql}) AS _filtered WHERE {condition}"
+        return None
 
 
 def _fix_sqlglot_output(sql: str) -> str:
@@ -267,13 +393,27 @@ def _fix_sqlglot_output(sql: str) -> str:
     )
 
 
-def _extract_column_name(condition: str | exp.Expression) -> str | None:
-    """从注入条件中提取列名，用于去重检测。例如 'department_id = 3' → 'department_id'"""
-    try:
-        if isinstance(condition, exp.Expression):
-            col = condition.find(exp.Column)
-        else:
-            col = sqlglot.parse_one(condition, dialect="postgres").find(exp.Column)
-        return col.name if col and hasattr(col, 'name') else None
-    except Exception:
-        return None
+def filter_result_columns(
+    columns: list[str],
+    rows: list[dict],
+    sensitive_columns: Collection[str] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """执行层防线：从查询结果里剔除敏感列（堵 SELECT * 泄露）。
+
+    元数据层故意不定义敏感列（Prompt 层防线），但物理表里它们真实存在，
+    `SELECT *` 不含列名、能穿过文本层校验，行数据会原样返回给用户和摘要 LLM。
+    sensitive_columns 来自 bi_datasources（= 物理存在但元数据隐藏的列），
+    大小写不敏感匹配（PG 未加引号的标识符统一折叠为小写）。"""
+    if not sensitive_columns:
+        return columns, rows
+    blocked = {c.casefold() for c in sensitive_columns if c}
+    if not blocked:
+        return columns, rows
+    kept = [c for c in columns if c.casefold() not in blocked]
+    if len(kept) == len(columns):
+        return columns, rows
+    filtered_rows = [
+        {k: v for k, v in row.items() if k.casefold() not in blocked}
+        for row in rows
+    ]
+    return kept, filtered_rows

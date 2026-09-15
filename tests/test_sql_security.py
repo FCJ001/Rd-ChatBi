@@ -176,14 +176,29 @@ def test_alm_business_injects_business_line():
     assert "business_line = 'ev'" in out
 
 
-def test_no_duplicate_injection_same_column():
+def test_existing_filter_column_still_enforced():
+    """★ SQL 已含过滤列时必须无条件叠加授权值，不允许去重跳过。
+
+    去重跳过是越权通道：用户诱导 LLM 写出 `department_id = 3`（别人的科室），
+    若跳过注入，doctor(dept=7) 就能查任意科室。无条件 AND 后，同列不同值
+    结果为空集（deny 语义），是安全方向的失败。"""
     sql = "SELECT id FROM outpatient_visits WHERE department_id = 3"
     ok, out = apply_role_filter(
         sql, role="doctor", role_rules=HOSPITAL_RULES, params={"dept_id": 7},
     )
     assert ok
-    # 已存在同名列，不重复注入
-    assert out.count("department_id") == 1
+    # 授权值条件必须出现在最终 SQL 里
+    assert "department_id = 7" in out
+
+
+def test_same_column_same_value_injects_once_more_harmlessly():
+    """已有条件恰好等于授权值时，重复 AND 只是冗余，行为不变。"""
+    sql = "SELECT id FROM outpatient_visits WHERE department_id = 7"
+    ok, out = apply_role_filter(
+        sql, role="doctor", role_rules=HOSPITAL_RULES, params={"dept_id": 7},
+    )
+    assert ok
+    assert "department_id = 7" in out
 
 
 def test_subquery_where_injected_at_top_level():

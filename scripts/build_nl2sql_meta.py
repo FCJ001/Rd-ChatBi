@@ -9,8 +9,9 @@
 # 接入新项目：写 conf/projects/{code}.yaml（含 datasource 段）→
 #   python scripts/build_nl2sql_meta.py --datasource {code} --rebuild
 # 用法：
-#   python scripts/build_nl2sql_meta.py                          # hospital_demo 增量
-#   python scripts/build_nl2sql_meta.py --datasource rd_agent    # 指定数据源
+#   python scripts/build_nl2sql_meta.py                          # rd_agent 增量
+#   python scripts/build_nl2sql_meta.py --datasource hospital_demo  # 指定数据源
+#   python scripts/link_fk_labels.py --datasource rd_agent          # 补外键 ID↔名称
 #   python scripts/build_nl2sql_meta.py --rebuild                # 全量重建
 #   python scripts/build_nl2sql_meta.py --dry-run                # 只打印
 # ============================================================
@@ -26,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from elasticsearch import AsyncElasticsearch
 from langchain_community.embeddings import DashScopeEmbeddings
 from pymilvus import DataType, MilvusClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.config import get_settings
@@ -48,7 +49,17 @@ VALUE_MAPPING = {
         "column_id": {"type": "keyword"},
         "column_name": {"type": "keyword"},
         "table_name": {"type": "keyword"},
+        # ★ source 区分两类记录：
+        #   "db"    —— 业务库 DISTINCT 出来的真实枚举值（可直接写进 WHERE）
+        #   "alias" —— YAML 手写的同义词（用户会这么叫，但库里不是这个值）
+        #   必须显式声明为 keyword；加字段后旧索引需全量重建才生效。
+        "source": {"type": "keyword"},
+        # 外键列的可读名（如 owner_domain_id=1 → "电池系统域"），仅展示用
+        "enum_label": {"type": "keyword"},
         "value": {
+            # ★ standard（默认）不是 IK：本镜像没装 IK 插件。
+            #   standard 对中文逐字切分，对短词表够用；若将来换成
+            #   长文本枚举，需要装 IK 插件并改这里。
             "type": "text",
             "analyzer": "standard",
         },
@@ -62,7 +73,7 @@ VALUE_MAPPING = {
 
 async def main(datasource: str | None = None, dry_run: bool = False, rebuild: bool = False):
     settings = get_settings()
-    code = datasource or "hospital_demo"
+    code = datasource or "rd_agent"
     yaml_path = Path(__file__).parents[1] / "conf" / "projects" / f"{code}.yaml"
     meta = MetaConfig.from_yaml(yaml_path)
     if meta.datasource is None:
@@ -120,12 +131,18 @@ async def main(datasource: str | None = None, dry_run: bool = False, rebuild: bo
     # ── ES ──────────────────────────────────────────────────
     es = AsyncElasticsearch(f"http://{settings.ES_HOST}:{settings.ES_PORT}")
 
+    # 业务库 engine：给 sync 列捞真实枚举值（dry_run 不碰库）
+    dw_engine = create_async_engine(ds.dsn) if not dry_run else None
+
     if dry_run:
         _dry_print_es(meta)
     elif rebuild:
-        await _rebuild_es(es, meta)
+        await _rebuild_es(es, meta, VALUE_INDEX, dw_engine)
     else:
-        await _upsert_es(es, meta)
+        await _upsert_es(es, meta, VALUE_INDEX, dw_engine)
+
+    if dw_engine is not None:
+        await dw_engine.dispose()
 
     await es.close()
     milvus.close()
@@ -522,31 +539,45 @@ async def _upsert_milvus(milvus: MilvusClient, meta: MetaConfig, emb: DashScopeE
 # ES — 全量重建
 # ════════════════════════════════════════════════════════════════
 
-async def _rebuild_es(es: AsyncElasticsearch, meta: MetaConfig):
+async def _rebuild_es(es: AsyncElasticsearch, meta: MetaConfig, index: str, dw_engine=None):
     """删除 index 后重建 + 全量写入"""
-    if await es.indices.exists(index=VALUE_INDEX):
-        await es.indices.delete(index=VALUE_INDEX)
-    await es.indices.create(index=VALUE_INDEX, mappings=VALUE_MAPPING)
-    count = await _index_yaml_values(es, meta)
-    await es.indices.refresh(index=VALUE_INDEX)
-    print(f"  ES values: {count} 条枚举值")
+    if await es.indices.exists(index=index):
+        await es.indices.delete(index=index)
+    await es.indices.create(index=index, mappings=VALUE_MAPPING)
+
+    docs, skipped = await _collect_value_docs(meta, dw_engine, index)
+    await _bulk_write_values(es, index, docs)
+    await es.indices.refresh(index=index)
+
+    n_db = sum(1 for d in docs if d["source"] == "db")
+    print(f"  ES values: {n_db} 条真实枚举值 + {len(docs) - n_db} 条同义词")
+    _report_skipped(skipped)
 
 
 # ════════════════════════════════════════════════════════════════
 # ES — 增量更新
 # ════════════════════════════════════════════════════════════════
 
-async def _upsert_es(es: AsyncElasticsearch, meta: MetaConfig):
-    """index 不存在则创建，存在则按 _id upsert + 删除 YAML 中不存在的 doc"""
+def _report_skipped(skipped: list[str]) -> None:
+    if skipped:
+        print(f"    ⚠ 跳过 {len(skipped)} 列: {', '.join(skipped[:6])}"
+              + (" …" if len(skipped) > 6 else ""))
 
-    if not await es.indices.exists(index=VALUE_INDEX):
-        await es.indices.create(index=VALUE_INDEX, mappings=VALUE_MAPPING)
+
+async def _upsert_es(es: AsyncElasticsearch, meta: MetaConfig, index: str, dw_engine=None):
+    """index 不存在则创建，存在则按 _id upsert + 删除已经不该存在的 doc"""
+
+    if not await es.indices.exists(index=index):
+        await es.indices.create(index=index, mappings=VALUE_MAPPING)
+
+    docs, skipped = await _collect_value_docs(meta, dw_engine, index)
+    target_ids = {d["id"] for d in docs}
 
     # 扫描现有 doc ID
     existing_ids: set[str] = set()
     try:
         result = await es.search(
-            index=VALUE_INDEX,
+            index=index,
             body={"query": {"match_all": {}}, "_source": False, "size": 10000},
             scroll="1m",
         )
@@ -563,36 +594,22 @@ async def _upsert_es(es: AsyncElasticsearch, meta: MetaConfig):
     except Exception:
         pass  # index 刚创建，还没有数据
 
-    # 写入 YAML 数据
-    yaml_ids = set()
-    count = 0
-    for t in meta.tables:
-        for c in t.columns:
-            if not c.sync or not c.alias:
-                continue
-            for alias in c.alias:
-                doc_id = f"{t.name}.{c.name}.{alias}"
-                yaml_ids.add(doc_id)
-                doc = {
-                    "id": doc_id,
-                    "column_id": f"{t.name}.{c.name}",
-                    "column_name": c.name,
-                    "table_name": t.name,
-                    "value": alias,
-                }
-                await es.index(index=VALUE_INDEX, id=doc_id, document=doc)
-                count += 1
+    await _bulk_write_values(es, index, docs)
 
-    # 删除 YAML 中不存在的 doc
-    stale = existing_ids - yaml_ids
+    # 删除已经不该存在的 doc（YAML 删了别名、业务库的枚举值消失了）。
+    # ★ 拉取失败而跳过的列，其旧值也会被这里删掉 —— 宁可暂时查不到，
+    #   也不要留下与业务库不一致的陈旧值误导模型。
+    stale = existing_ids - target_ids
     for doc_id in stale:
         try:
-            await es.delete(index=VALUE_INDEX, id=doc_id)
+            await es.delete(index=index, id=doc_id)
         except Exception:
             pass
 
-    await es.indices.refresh(index=VALUE_INDEX)
-    print(f"  ES values: +{count - len(existing_ids & yaml_ids)} ~{len(existing_ids & yaml_ids)} -{len(stale)} (总计 {count})")
+    await es.indices.refresh(index=index)
+    n_db = sum(1 for d in docs if d["source"] == "db")
+    print(f"  ES values: {n_db} 条真实枚举值 + {len(docs) - n_db} 条同义词，清理 {len(stale)} 条陈旧")
+    _report_skipped(skipped)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -756,23 +773,155 @@ def _build_metric_vectors(meta: MetaConfig, emb: DashScopeEmbeddings) -> list[di
 # ════════════════════════════════════════════════════════════════
 
 async def _index_yaml_values(es: AsyncElasticsearch, meta: MetaConfig) -> int:
-    """将 YAML 中 sync:true 的列的 alias 写入 ES"""
-    count = 0
+    """（保留旧名做兼容）等价于 _collect_value_docs + _bulk_write_values"""
+    docs, _ = await _collect_value_docs(meta, None, VALUE_INDEX)
+    await _bulk_write_values(es, VALUE_INDEX, docs)
+    return len(docs)
+
+
+# ── 枚举值护栏：宁可少写几条，也不能把百万行的事实表 DISTINCT 出来灌爆 ES ──
+MAX_ENUM_VALUES_PER_COLUMN = 200    # 单列最多写入多少个值
+MAX_ENUM_IN_QUERY = 5000            # 拉取时最多扫描多少个
+MAX_ENUM_VALUE_LEN = 100            # 超长值多半是描述文本，不是枚举值
+_SYNC_ALLOWED_ROLES = {"dimension", "date", "measure", "foreign_key"}
+
+
+def _alias_doc(table: str, column: str, alias: str) -> dict:
+    return {
+        "id": f"{table}.{column}.alias.{alias}",
+        "column_id": f"{table}.{column}",
+        "column_name": column,
+        "table_name": table,
+        "value": alias,
+        "source": "alias",
+    }
+
+
+def _db_value_doc(table: str, column: str, value: str, label: str | None = None) -> dict:
+    doc = {
+        "id": f"{table}.{column}.db.{value}",
+        "column_id": f"{table}.{column}",
+        "column_name": column,
+        "table_name": table,
+        "value": value,
+        "source": "db",
+    }
+    if label:
+        doc["enum_label"] = label
+    return doc
+
+
+async def _fetch_fk_pairs(engine, src_table: str, src_col: str) -> list[tuple[str, str]]:
+    """外键列：取 (可读名, 主键值) 对，用于「ID → 名称」映射。
+
+    ★ 为什么必须成对取：行级过滤要的是**数字 ID**（X-Owner-Domain-Id: 1），
+      而人认得的是**名称**（电池系统域）。两者都要 ——
+      ES 的 value 存 ID（喂给模型当合法取值），enum_label 存名称（前端下拉展示）。
+    """
+    pk_sql = sa_text(
+        "SELECT a.attname FROM pg_index i "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+        "WHERE i.indrelid = to_regclass(:t) AND i.indisprimary"
+    )
+    async with engine.connect() as conn:
+        pk_cols = (await conn.execute(pk_sql, {"t": src_table})).scalars().all()
+        if len(pk_cols) != 1:
+            raise ValueError(f"{src_table} 没有单列主键，无法建立 ID 映射")
+        pk = pk_cols[0]
+        rows = (await conn.execute(sa_text(
+            f'SELECT "{pk}" AS id, "{src_col}" AS label FROM "{src_table}" '
+            f'WHERE "{src_col}" IS NOT NULL LIMIT {MAX_ENUM_IN_QUERY}'
+        ))).mappings().all()
+
+    out: list[tuple[str, str]] = []
+    for r in rows:
+        label = str(r["label"]).strip()
+        if not label or len(label) > MAX_ENUM_VALUE_LEN:
+            continue
+        # ★ 顺序是 (可读名, 主键值)：调用方拿 name 当展示、PK 当 value
+        out.append((label, str(r["id"])))
+    return out
+
+async def _fetch_db_values(engine, table: str, column: str) -> list[str]:
+    """从业务库捞一列的真实枚举值。
+
+    ★ sync: true 的含义就是「这一列的取值值得让模型知道」。
+      只灌 YAML 里手写的 alias 是不够的 —— 那只是同义词，
+      模型仍然不知道合法取值集合，会编出 WHERE 科室='心内科' 这种查空的 SQL。
+    """
+    sql = (
+        f'SELECT DISTINCT "{column}" AS v FROM "{table}" '
+        f'WHERE "{column}" IS NOT NULL LIMIT {MAX_ENUM_IN_QUERY}'
+    )
+    async with engine.connect() as conn:
+        rows = (await conn.execute(sa_text(sql))).scalars().all()
+
+    out: list[str] = []
+    for v in rows:
+        s = str(v).strip()
+        # 空串、超长文本（多半是备注字段）不入枚举；日期按 ISO 串存
+        if not s or len(s) > MAX_ENUM_VALUE_LEN:
+            continue
+        out.append(s)
+    return out
+
+
+async def _collect_value_docs(meta: MetaConfig, dw_engine, index: str) -> tuple[list[dict], list[str]]:
+    """把要写进 ES 的文档**先算出来**（不写），返回 (docs, 跳过的列说明)。
+
+    ★ 先算后写 + 显式 _id：增量模式要拿目标 id 集合跟 ES 现有 id 对账，
+      必须建完才知道哪些是多余的；用自动生成的 _id 则每跑一次就多一批重复文档。
+    """
+    docs: list[dict] = []
+    skipped: list[str] = []
+
     for t in meta.tables:
         for c in t.columns:
-            if not c.sync or not c.alias:
+            if not c.sync:
                 continue
-            for alias in c.alias:
-                doc = {
-                    "id": f"{t.name}.{c.name}.{alias}",
-                    "column_id": f"{t.name}.{c.name}",
-                    "column_name": c.name,
-                    "table_name": t.name,
-                    "value": alias,
-                }
-                await es.index(index=VALUE_INDEX, document=doc)
-                count += 1
-    return count
+
+            for alias in c.alias or []:
+                docs.append(_alias_doc(t.name, c.name, alias))
+
+            if dw_engine is None or c.role not in _SYNC_ALLOWED_ROLES:
+                continue
+
+            try:
+                if c.enum_source and "." in c.enum_source:
+                    # 外键列：_fetch_fk_pairs 返回 (可读名, 主键值)。
+                    # ★ 必须把 PK 当 value、名称当 label —— 反了的话喂给模型的是
+                    #   「电池系统域」，而 WHERE owner_domain_id = '电池系统域' 是查不到的；
+                    #   行级过滤注入的也得是数字 ID。
+                    src_table, src_col = c.enum_source.split(".", 1)
+                    pairs = await _fetch_fk_pairs(dw_engine, src_table, src_col)
+                    values = [(pk, label) for label, pk in pairs]
+                else:
+                    values = [(v, None) for v in
+                              await _fetch_db_values(dw_engine, t.name, c.name)]
+            except Exception as e:
+                # 单列失败不该中断整个建库（表可能不存在/列已改名）
+                skipped.append(f"{t.name}.{c.name}({type(e).__name__})")
+                continue
+
+            if len(values) > MAX_ENUM_VALUES_PER_COLUMN:
+                # ★ 超限整列不写：截断一半的枚举会让模型自信地排除掉
+                #   存在但没写进去的值，比不写更危险
+                skipped.append(f"{t.name}.{c.name}(候选 {len(values)} 个，超上限)")
+                continue
+
+            for value, label in values:
+                docs.append(_db_value_doc(t.name, c.name, value, label))
+
+    return docs, skipped
+
+
+async def _bulk_write_values(es: AsyncElasticsearch, index: str, docs: list[dict]) -> None:
+    """批量写。比逐条 index 快一个量级；显式 _id 保证重跑幂等"""
+    from elasticsearch.helpers import async_bulk
+
+    actions = [{"_index": index, "_id": d["id"], "_source": d} for d in docs]
+    if actions:
+        await async_bulk(es, actions, refresh=False)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -814,7 +963,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="NL2SQL 元数据构建（多数据源）")
-    parser.add_argument("--datasource", default="hospital_demo", help="数据源编码（conf/projects/{code}.yaml）")
+    parser.add_argument("--datasource", default="rd_agent", help="数据源编码（conf/projects/{code}.yaml）")
     parser.add_argument("--dry-run", action="store_true", help="只打印，不写入")
     parser.add_argument("--rebuild", action="store_true", help="全量重建（删光本数据源数据）")
     args = parser.parse_args()

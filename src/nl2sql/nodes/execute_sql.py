@@ -3,8 +3,10 @@
 # ============================================================
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
-from src.nl2sql.engine import generate_summary, setup_readonly_session
+from src.nl2sql.engine import SQL_TIMEOUT, generate_summary, setup_readonly_session
+from src.nl2sql.security import filter_result_columns
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
 
@@ -41,10 +43,30 @@ async def execute_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
             result = await db.execute(text(filtered_sql))
             columns = list(result.keys())
             rows = [dict(row) for row in result.mappings().all()]
+            # 执行层防线：SELECT * 能穿过文本校验，敏感列在这里从结果集剔除
+            # （必须在 generate_summary 之前，否则敏感数据仍会进 LLM prompt）
+            columns, rows = filter_result_columns(
+                columns, rows, ctx.get("sensitive_columns"),
+            )
             source_name = ctx.get("source_name") or "业务数据库"
             summary = await generate_summary(state["query"], rows, llm, source_name)
+        except DBAPIError as e:
+            # 与旧引擎 run_query 对齐：超时归类为友好提示，其余不透出原始
+            # 数据库错误文本（可能暴露表结构），详情只进日志
+            from src.core.logger import logger
+            await db.rollback()
+            if "canceling statement" in str(e) or "timeout" in str(e).lower():
+                error = f"查询超时（{SQL_TIMEOUT}秒），请缩小查询范围"
+            else:
+                error = "数据库执行失败，请调整问题后重试"
+            logger.warning(f"[execute_sql] DBAPIError: {e}")
+            columns, rows, summary = [], [], ""
         except Exception as e:
-            columns, rows, summary, error = [], [], "", str(e)
+            from src.core.logger import logger
+            await db.rollback()
+            error = "查询执行失败，请调整问题后重试"
+            logger.warning(f"[execute_sql] 执行异常: {e}")
+            columns, rows, summary = [], [], ""
 
     from src.core.logger import logger
 

@@ -12,6 +12,9 @@ datasource:
   dsn: postgresql+asyncpg://rdagent:rdagent123@localhost:5432/chatbi_demo
   milvus_prefix: chatbi
   es_prefix: chatbi
+  # 敏感列：物理表里存在但元数据故意不定义（Prompt 层防线）。
+  # 这里声明后获得两层兜底：SQL 文本显式引用即拒绝 + SELECT * 的结果列过滤
+  sensitive_columns: [patient_no, patient_name, patient_phone, id_card]
   role_rules:
     default: deny
     roles:
