@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rd-chatBI 架构图</title>
+<style>
+:root {
+  --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --muted:#656d76;
+  --line:#d8dee4; --accent:#0969da; --code-bg:#f0f2f5;
+  --tbl-head:#f6f8fa; --quote:#d0d7de;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0d1117; --card:#161b22; --ink:#e6edf3; --muted:#8b949e;
+    --line:#30363d; --accent:#58a6ff; --code-bg:#1c2128;
+    --tbl-head:#1c2128; --quote:#3d444d;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin:0; padding:0;
+  background:var(--bg); color:var(--ink);
+  font:16px/1.75 -apple-system, BlinkMacSystemFont, "PingFang SC",
+       "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap { max-width:960px; margin:0 auto; padding:48px 24px 120px; }
+
+/* ── 标题 ── */
+h1,h2,h3,h4 { line-height:1.35; font-weight:650; margin:2em 0 .7em; }
+h1 { font-size:1.9em; margin-top:0; padding-bottom:.4em; border-bottom:1px solid var(--line); }
+h2 { font-size:1.45em; padding-bottom:.35em; border-bottom:1px solid var(--line); }
+h3 { font-size:1.18em; }
+h4 { font-size:1.02em; color:var(--muted); }
+h1+p,h2+p,h3+p { margin-top:.4em; }
+
+/* ── 正文 ── */
+p { margin:.85em 0; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+strong { font-weight:650; }
+hr { border:0; border-top:1px solid var(--line); margin:2.5em 0; }
+ul,ol { padding-left:1.6em; margin:.8em 0; }
+li { margin:.3em 0; }
+li > p { margin:.3em 0; }
+img { max-width:100%; height:auto; border-radius:6px; }
+
+/* ── 引用块：★ 提示都写在这里，要显眼但别刺眼 ── */
+blockquote {
+  margin:1.2em 0; padding:.6em 1.1em;
+  border-left:4px solid var(--accent);
+  background:var(--code-bg); border-radius:0 6px 6px 0;
+  color:var(--ink);
+}
+blockquote > p:first-child { margin-top:.2em; }
+blockquote > p:last-child { margin-bottom:.2em; }
+
+/* ── 行内代码：中文文档里默认样式对比度太弱，单独加重 ── */
+code {
+  font-family:ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size:.875em; padding:.18em .42em;
+  background:var(--code-bg); border:1px solid var(--line);
+  border-radius:5px; white-space:nowrap;
+}
+/* 代码块里的 code 不再叠加边框/底色 */
+pre {
+  margin:1.2em 0; padding:16px 18px; overflow-x:auto;
+  background:var(--code-bg); border:1px solid var(--line);
+  border-radius:8px; line-height:1.55;
+}
+pre code {
+  padding:0; background:none; border:0; white-space:pre;
+  font-size:.86em; line-height:1.6;
+}
+
+/* ── 表格：Markdown 表格默认挤在一起，这里给足留白 ── */
+table {
+  border-collapse:collapse; width:100%; margin:1.4em 0;
+  font-size:.94em; display:block; overflow-x:auto;
+}
+th,td {
+  border:1px solid var(--line); padding:9px 13px;
+  text-align:left; vertical-align:top;
+}
+th { background:var(--tbl-head); font-weight:650; white-space:nowrap; }
+tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transparent); }
+
+/* ── mermaid 图 ── */
+.mermaid {
+  margin:1.6em 0; padding:18px; text-align:center;
+  /* ★ 固定白底：图内配色锁死浅色方案，背景就必须跟着白，
+     否则深色模式下浅色节点会浮在深色画布上、边缘发灰 */
+  background:#fff; border:1px solid var(--line); border-radius:10px;
+  overflow-x:auto;
+}
+.mermaid svg { max-width:100%; height:auto; }
+
+/* ── 返回顶部 ── */
+#top {
+  position:fixed; right:22px; bottom:22px;
+  width:42px; height:42px; border-radius:50%;
+  display:none; align-items:center; justify-content:center;
+  background:var(--card); border:1px solid var(--line); color:var(--ink);
+  cursor:pointer; font-size:17px; box-shadow:0 2px 10px rgba(0,0,0,.12);
+}
+#top.show { display:flex; }
+#top:hover { border-color:var(--accent); color:var(--accent); }
+
+@media print {
+  body { background:#fff; }
+  .wrap { max-width:none; padding:0; }
+  #top { display:none !important; }
+  pre,table,.mermaid { break-inside:avoid; }
+}
+</style>
+</head>
+<body>
+<main class="wrap">
+<h1 id="rd-chatbi-架构图">rd-chatBI 架构图</h1>
+<blockquote>
+<p>本文件只放 Mermaid 源码，便于 GitHub / GitLab / Obsidian / mermaid.live 直接渲染。
+讲稿正文见 <a href="../INTERVIEW.md"><code>../INTERVIEW.md</code></a>。</p>
+<p><strong>本地直接看图</strong>：打开 <a href="architecture.html"><code>architecture.html</code></a>（浏览器渲染，可导出 PNG）。
+<strong>可打印 HTML 版</strong>：<a href="architecture_print.html">architecture_print.html</a>（由本文件生成）；
+<strong>已导出的图片</strong>：<a href="png/fig0.png"><code>png/fig0.png</code></a>（总览）~ <a href="png/fig4.png"><code>png/fig4.png</code></a>，
+由 <code>mmdc</code>（mermaid-cli）从本文件的代码块生成，<code>-s 2</code> 即 2 倍分辨率：</p>
+<pre><code class="language-bash">npx @mermaid-js/mermaid-cli -i figN.mmd -o figN.png -b white -s 2 \
+  -p puppeteer.json -c mermaid-theme.json   # 配色必须传，否则用内置低对比主题
+</code></pre>
+</blockquote>
+<h2 id="图-0--一句话总览先看这张再看细节">图 0 — 一句话总览（先看这张，再看细节）</h2>
+<div class="mermaid">
+flowchart LR
+    Q["自然语言提问&lt;br/&gt;「目前有多少个未关闭的严重问题单」"]
+    R["① 召回&lt;br/&gt;表 / 字段 / 指标 / 枚举值&lt;br/&gt;（向量 + 全文检索）"]
+    F["② 过滤&lt;br/&gt;LLM 选出最小集合&lt;br/&gt;（省 token、防选错表）"]
+    G["③ 生成 SQL&lt;br/&gt;LLM 拿元数据 + 日期生成"]
+    V{"④ 安全校验&lt;br/&gt;能不能过？"}
+    E["⑤ 执行&lt;br/&gt;只读事务 + 行级权限注入&lt;br/&gt;+ 结果列过滤"]
+    C["纠错&lt;br/&gt;拿 DB 报错回炉（1 轮）"]
+    O["返回&lt;br/&gt;数据表 + 图表 + 文字摘要"]
+
+    Q --&gt; R --&gt; F --&gt; G --&gt; V
+    V --&gt;|通过| E --&gt; O
+    V --&gt;|不通过| C
+    C -.-&gt;|"修完必须重新校验"| V
+
+    style V fill:#fee2e2,stroke:#b91c1c,stroke-width:2px
+    style E fill:#fef3c7,stroke:#b45309,stroke-width:2px
+    style O fill:#dcfce7,stroke:#15803d
+</div>
+
+
+
+<blockquote>
+<p>记住这一条线，细节都是它的展开：<strong>召回 → 过滤 → 生成 → 校验 →（纠错）→ 执行</strong>。
+下面三张图分别是：架构全景、流水线细节、安全防线细节。</p>
+</blockquote>
+<h2 id="图-1--整体架构请求链路--存储分工">图 1 — 整体架构（请求链路 + 存储分工）</h2>
+<div class="mermaid">
+flowchart TB
+    FE["前端&lt;br/&gt;src/static/chatbi.html&lt;br/&gt;Vue + ECharts CDN"]
+
+    subgraph API["FastAPI　src/main.py"]
+        direction TB
+        MW["中间件链&lt;br/&gt;TraceLogging → Prometheus → CORS"]
+        subgraph DEPS["依赖注入链　router.py"]
+            direction LR
+            D1["get_current_user&lt;br/&gt;UserContext&lt;br/&gt;role / owner_domain_id / project_id"]
+            D2["enforce_rate_limit&lt;br/&gt;Redis ZSET 滑动窗口&lt;br/&gt;20 req / 60s / user"]
+            D3["get_project_dw&lt;br/&gt;按 project_id 打开&lt;br/&gt;只读业务库 session"]
+        end
+    end
+
+    subgraph ORCH["编排层　graph.py（定义单一来源）"]
+        direction LR
+        A1["astream → pipeline.py&lt;br/&gt;SSE 逐节点推送（在线）"]
+        A2["ainvoke → run_nl2sql_graph&lt;br/&gt;一次拿完整终态（离线评测）"]
+    end
+
+    subgraph PIPE["9 阶段流水线"]
+        P["见下方图 2"]
+    end
+
+    subgraph STORE["存储分工"]
+        direction LR
+        S1[("PostgreSQL&lt;br/&gt;rd_chatbi 元数据&lt;br/&gt;chatbi_demo 业务库·只读")]
+        S2[("Milvus&lt;br/&gt;chatbi_columns&lt;br/&gt;chatbi_metrics&lt;br/&gt;语义检索")]
+        S3[("Elasticsearch&lt;br/&gt;chatbi_{prefix}_values&lt;br/&gt;真实枚举值 + 同义词")]
+    end
+
+    FE --&gt;|"POST /api/v1/bi/query-stream&lt;br/&gt;X-User-* / X-Project-Id"| MW
+    MW --&gt; DEPS
+    DEPS --&gt; ORCH
+    ORCH --&gt; PIPE
+    PIPE &lt;--&gt; S1
+    PIPE &lt;--&gt; S2
+    PIPE &lt;--&gt; S3
+
+    style PIPE fill:#e8f4ff,stroke:#0369a1,stroke-width:2px
+    style STORE fill:#fff7e6,stroke:#b45309
+    style API fill:#f0fdf4,stroke:#15803d
+</div>
+
+
+
+<h2 id="图-2--9-阶段流水线主干并行--条件--回环">图 2 — 9 阶段流水线主干（并行 / 条件 / 回环）</h2>
+<div class="mermaid">
+flowchart TB
+    START(("用户提问&lt;br/&gt;各责任域的问题单数量排名&lt;br/&gt;role=engineer, owner_domain_id=1"))
+
+    N1["① extract_keywords　【纯 CPU】&lt;br/&gt;jieba TF-IDF + 词性白名单 topK=10&lt;br/&gt;原句插到首位兜底"]
+
+    subgraph RECALL["② 三路并行召回（各写 state 不同 key，互不冲突）"]
+        direction LR
+        N2A["②a recall_columns&lt;br/&gt;【LLM】扩展关键词&lt;br/&gt;→【Embedding】批量向量化&lt;br/&gt;→【Milvus】chatbi_columns&lt;br/&gt;top_k=5, threshold=0.6"]
+        N2B["②b recall_values&lt;br/&gt;【LLM】扩展关键词&lt;br/&gt;→【ES】两步检索&lt;br/&gt;①命中词找到列 ②带回该列真实值&lt;br/&gt;size=10"]
+        N2C["②c recall_metrics&lt;br/&gt;【LLM】扩展关键词&lt;br/&gt;→【Embedding】批量向量化&lt;br/&gt;→【Milvus】chatbi_metrics&lt;br/&gt;top_k=5, threshold=0.6"]
+    end
+
+    N3["③ merge_info　【PG】&lt;br/&gt;★三条入边 = 自动等待全部完成&lt;br/&gt;从指标定义反查 relevant_columns&lt;br/&gt;补全量列 + 主键/外键（JOIN 必需）&lt;br/&gt;把召回的值挂到列的 examples&lt;br/&gt;冷启动兜底：一无所获 → 回退全量表"]
+
+    subgraph FILTER["④ 两路并行过滤"]
+        direction LR
+        N4A["④a filter_tables　【LLM】&lt;br/&gt;表结构→YAML，选最小列集合&lt;br/&gt;主外键强制保留&lt;br/&gt;解析失败 → 保留全量（降级）"]
+        N4B["④b filter_metrics　【LLM】&lt;br/&gt;指标列表→YAML，选最小集合&lt;br/&gt;解析失败 → 保留全量（降级）"]
+    end
+
+    N5["⑤ add_context　【纯 CPU】&lt;br/&gt;注入 date / quarter / weekday / PG 版本&lt;br/&gt;不加这个，LLM 算不出「上个月」"]
+    N6["⑥ generate_sql　【LLM】&lt;br/&gt;System：表结构 YAML + 指标 YAML&lt;br/&gt;+ 日期 + 安全规则 + 6 条规则&lt;br/&gt;Human：用户原问题"]
+
+    N7["⑦ validate_sql　★安全闸门★&lt;br/&gt;security.validate_sql()&lt;br/&gt;+ EXPLAIN 预执行（只解析不执行）&lt;br/&gt;★返回值是重写后的 SQL，必须用返回值"]
+
+    N8["⑧ correct_sql　【LLM】&lt;br/&gt;把 DB 报错喂回 LLM 修&lt;br/&gt;预算 MAX_SQL_FIX_ROUNDS = 1"]
+    REJECT(("拒绝执行&lt;br/&gt;不返回任何数据"))
+
+    N9["⑨ execute_sql&lt;br/&gt;行级过滤注入 → 只读事务执行&lt;br/&gt;→ 结果列过滤 → LLM 摘要"]
+
+    CHART["图表　router.py 消费端&lt;br/&gt;recommend_chart【LLM】→ to_echarts_option【pandas】"]
+    DONE(("SSE 返回&lt;br/&gt;SQL + 数据表 + 图表 + 摘要"))
+
+    START --&gt; N1 --&gt; N2A &amp; N2B &amp; N2C
+    N2A &amp; N2B &amp; N2C --&gt; N3
+    N3 --&gt; N4A &amp; N4B
+    N4A &amp; N4B --&gt; N5 --&gt; N6 --&gt; N7
+
+    N7 --&gt;|"error 为空&lt;br/&gt;校验通过"| N9
+    N7 --&gt;|"error 非空&lt;br/&gt;且有纠错预算"| N8
+    N7 --&gt;|"预算用尽仍报错"| REJECT
+    N8 -.-&gt;|"★纠错产物同样是 LLM 输出&lt;br/&gt;必须回 ⑦ 复检"| N7
+
+    N9 --&gt; CHART --&gt; DONE
+
+    style N7 fill:#fee2e2,stroke:#b91c1c,stroke-width:3px
+    style N9 fill:#fef3c7,stroke:#b45309,stroke-width:2px
+    style RECALL fill:#e8f4ff,stroke:#0369a1
+    style FILTER fill:#e8f4ff,stroke:#0369a1
+    style REJECT fill:#fee2e2,stroke:#b91c1c
+    style DONE fill:#f0fdf4,stroke:#15803d
+</div>
+
+
+
+<h2 id="图-3--四层-sql-安全防线数据在每层被拦什么">图 3 — 四层 SQL 安全防线（数据在每层被拦什么）</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph L1["第一层　Prompt 层"]
+        A1["敏感列不在元数据里定义&lt;br/&gt;LLM 压根看不到这些列"]
+        A1R["挡：从源头消除&lt;br/&gt;（LLM 不知道 = 不会主动查）"]
+    end
+
+    subgraph L2["第二层　文本 / AST 层　security.validate_sql　★核心★"]
+        B0["剥尾部 -- 注释&lt;br/&gt;（跳过字符串字面量内的 --）"]
+        B1["sqlglot 解析成 AST"]
+        B2["① 单语句？&lt;br/&gt;len(statements) 大于 1 → 拒绝"]
+        B3["② SELECT-only？&lt;br/&gt;非 exp.Select → 拒绝&lt;br/&gt;SELECT ... INTO → 拒绝"]
+        B4["③ 去注释文本跑&lt;br/&gt;FORBIDDEN_PATTERNS"]
+        B5["④ AST 检查敏感列引用&lt;br/&gt;_references_sensitive_column"]
+        B6["⑤ AST 检查危险函数&lt;br/&gt;pg_read_file / set_config&lt;br/&gt;/ dblink* / lo_import"]
+        B7["⑥ _clamp_row_limit&lt;br/&gt;所有 LIMIT / FETCH 压到 100&lt;br/&gt;非字面量也覆盖｜嵌套子查询一并处理"]
+        B0 --&gt; B1 --&gt; B2 --&gt; B3 --&gt; B4 --&gt; B5 --&gt; B6 --&gt; B7
+    end
+
+    subgraph L3["第三层　执行层"]
+        C1["apply_role_filter&lt;br/&gt;数据驱动 role_rules&lt;br/&gt;★无条件 AND 注入，不去重&lt;br/&gt;参数经 exp.convert 编码"]
+        C2["setup_readonly_session&lt;br/&gt;statement_timeout = 10s&lt;br/&gt;default_transaction_read_only = on"]
+        C3["filter_result_columns&lt;br/&gt;★堵 SELECT *&lt;br/&gt;必须在 generate_summary 之前"]
+        C1 --&gt; C2 --&gt; C3
+    end
+
+    subgraph L4["第四层　数据库层"]
+        D1["只读副本 / 只读账号&lt;br/&gt;前三层全被绕过时的最后兜底"]
+    end
+
+    SQL["LLM 生成的 SQL&lt;br/&gt;（不可信输入）"]
+    OUT["执行结果 + 摘要"]
+
+    SQL --&gt; L1 --&gt; L2 --&gt; L3 --&gt; L4 --&gt; OUT
+
+    style L2 fill:#fee2e2,stroke:#b91c1c,stroke-width:2px
+    style L3 fill:#fef3c7,stroke:#b45309,stroke-width:2px
+    style L4 fill:#f0fdf4,stroke:#15803d
+</div>
+
+
+
+<h2 id="图-4--sse-事件流queue-桥接">图 4 — SSE 事件流（queue 桥接）</h2>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as 客户端&lt;br/&gt;EventSource
+    participant R as router.py&lt;br/&gt;event_stream
+    participant Q as asyncio.Queue
+    participant P as 流水线 task&lt;br/&gt;run_pipeline
+    participant N as graph 节点
+
+    C-&gt;&gt;R: POST /query-stream
+    R-&gt;&gt;R: resolve_question（多轮改写）
+
+    par 生产者（流水线 task）
+        loop 每个节点
+            N--&gt;&gt;P: ctx["writer"]({type:progress,...})
+            P-&gt;&gt;Q: put(进度事件)
+            N--&gt;&gt;P: 节点完成 return {...}
+            P-&gt;&gt;Q: put({node_name: result})
+        end
+        P-&gt;&gt;Q: put(None)
+    and 消费者（event_stream）
+        loop 直到 sentinel
+            Q-&gt;&gt;R: get()
+            R--&gt;&gt;C: data: {"node":...,"step":n,"data":{...}}
+        end
+    end
+
+    note over R,C: execute_sql 事件到达时&lt;br/&gt;额外触发图表推荐与 ECharts option 构建
+    note over R,P: 客户端断连 → finally task.cancel()&lt;br/&gt;否则剩余 LLM 调用会全跑完，白烧钱
+</div>
+
+
+
+</main>
+<button id="top" title="返回顶部">↑</button>
+<script type="module">
+const hasMermaid = document.querySelector(".mermaid");
+if (hasMermaid) {
+  try {
+    const mermaid = (await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs")).default;
+    // 不用 mermaid 内置的 default/dark 主题：default 在浅色底上是一整套
+    // 低对比的浅紫填充，节点文字和底色几乎糊在一起（实测截图确认）。
+    // 这里给两套显式配色，保证图表在两种模式下都可读。
+    const light = {
+      darkMode: false, background: "#ffffff", fontSize: "15px",
+      primaryColor: "#dbeafe", primaryTextColor: "#0b2545", primaryBorderColor: "#2563eb",
+      secondaryColor: "#f1f5f9", secondaryTextColor: "#0b2545", secondaryBorderColor: "#64748b",
+      tertiaryColor: "#f8fafc", tertiaryTextColor: "#0b2545", tertiaryBorderColor: "#94a3b8",
+      lineColor: "#334155", textColor: "#0b2545",
+      noteBkgColor: "#fef3c7", noteTextColor: "#78350f", noteBorderColor: "#d97706",
+      actorBkg: "#dbeafe", actorTextColor: "#0b2545", actorBorder: "#2563eb",
+      signalColor: "#334155", signalTextColor: "#0b2545",
+      labelBoxBkgColor: "#fef3c7", labelBoxBorderColor: "#d97706", labelTextColor: "#78350f",
+      sequenceNumberColor: "#ffffff",
+      clusterBkg: "#f8fafc", clusterBorder: "#94a3b8",
+    };
+    const dark = {
+      darkMode: true, background: "#161b22", fontSize: "15px",
+      primaryColor: "#1f3a5f", primaryTextColor: "#e6edf3", primaryBorderColor: "#58a6ff",
+      secondaryColor: "#21262d", secondaryTextColor: "#e6edf3", secondaryBorderColor: "#8b949e",
+      tertiaryColor: "#1c2128", tertiaryTextColor: "#e6edf3", tertiaryBorderColor: "#6e7681",
+      lineColor: "#8b949e", textColor: "#e6edf3",
+      noteBkgColor: "#4d3800", noteTextColor: "#fde68a", noteBorderColor: "#d97706",
+      actorBkg: "#1f3a5f", actorTextColor: "#e6edf3", actorBorder: "#58a6ff",
+      signalColor: "#8b949e", signalTextColor: "#e6edf3",
+      labelBoxBkgColor: "#4d3800", labelBoxBorderColor: "#d97706", labelTextColor: "#fde68a",
+      sequenceNumberColor: "#0d1117",
+      clusterBkg: "#1c2128", clusterBorder: "#6e7681",
+    };
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "loose",
+      // ★ 图表配色固定用浅色方案：讲稿里的图要能导出贴 PPT，
+      //   而 PPT 白底是绝对多数；跟随系统会让同一张图在两种模式下颜色不同。
+      //   （页面正文仍然跟随系统深浅，只有画布固定白底。）
+      theme: "base",
+      themeVariables: light,
+      // subGraphTitleMargin 必须有：默认子图标题贴着边框，进入子图的箭头
+      // 会直接压在标题文字上（实测："9 阶段流水线"/"存储分工" 被箭头划掉）
+      flowchart: {
+        htmlLabels: true, useMaxWidth: true,
+        padding: 14, nodeSpacing: 45, rankSpacing: 50,
+        subGraphTitleMargin: { top: 10, bottom: 16 },
+      },
+      sequence: { useMaxWidth: true, mirrorActors: false, actorMargin: 60 },
+    });
+    await mermaid.run({ querySelector: ".mermaid" });
+  } catch (e) {
+    // 离线时保留源码，至少能看到内容而不是空白
+    document.querySelectorAll(".mermaid").forEach(el => {
+      el.innerHTML = '<pre style="text-align:left;margin:0"><code>'
+        + el.textContent.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))
+        + '</code></pre>';
+    });
+    console.warn("mermaid 加载失败，已降级为源码显示：", e);
+  }
+}
+const top = document.getElementById("top");
+addEventListener("scroll", () => top.classList.toggle("show", scrollY > 400));
+top.onclick = () => scrollTo({ top: 0, behavior: "smooth" });
+</script>
+</body>
+</html>

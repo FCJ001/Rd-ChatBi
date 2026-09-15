@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     rd-chatBI 架构图查看器
+
+     ★ 和 architecture_print.html（md2html 生成）的区别：
+       - 这个带工具栏（缩放 / 显隐源码 / 一键导出全部 PNG），看图和取图用
+       - 那个是文档格式，用于阅读和打印
+       ★ 图内容从 ./architecture.md 读取（单一事实来源），不内联副本 ——
+         之前内联过一份，md 改了 html 不会跟着变，已经吃过一次亏。
+         所以本文件必须通过 http 打开，file:// 下 fetch 会被 CORS 拦住：
+             cd docs/diagrams && python3 -m http.server 8080
+             → http://localhost:8080/architecture.html
+         懒得起服务就用 architecture_print.html，功能少但双击即开。
+     ============================================================ -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rd-chatBI 架构图</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --muted:#656d76;
+          --line:#d8dee4; --accent:#0969da; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:28px 20px 80px; background:var(--bg); color:var(--ink);
+         font:15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC",
+              "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+  header { max-width:1500px; margin:0 auto 20px; }
+  h1 { font-size:21px; margin:0 0 6px; }
+  .sub { color:var(--muted); font-size:13px; }
+  code { background:var(--card); border:1px solid var(--line);
+         border-radius:4px; padding:1px 5px; font-size:.9em; }
+  .toolbar { max-width:1500px; margin:0 auto 22px; display:flex; gap:8px;
+             flex-wrap:wrap; align-items:center; position:sticky; top:0;
+             background:var(--bg); padding:10px 0; z-index:9; }
+  button { font:inherit; font-size:13px; cursor:pointer; background:var(--card);
+           color:var(--ink); border:1px solid var(--line);
+           border-radius:6px; padding:6px 12px; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .spacer { flex:1; }
+  section { max-width:1500px; margin:0 auto 36px; background:var(--card);
+            border:1px solid var(--line); border-radius:10px; padding:18px 22px 24px; }
+  section > h2 { font-size:16px; margin:0 0 4px; padding-bottom:10px;
+                 border-bottom:1px solid var(--line); }
+  section > .hint { color:var(--muted); font-size:12.5px; margin:9px 0 16px; }
+  /* 固定白底 + 高对比配色：图的配色是浅色方案，深色画布上会发灰 */
+  .diagram { overflow-x:auto; text-align:center; background:#fff;
+             border:1px solid var(--line); border-radius:8px; padding:12px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  body[data-zoom="50"]  .diagram svg { max-width:50%; }
+  body[data-zoom="75"]  .diagram svg { max-width:75%; }
+  body[data-zoom="100"] .diagram svg { max-width:100%; }
+  body[data-zoom="150"] .diagram svg { max-width:none; width:150%; }
+  .err { color:#b91c1c; background:#fee2e2; border:1px solid #fca5a5;
+         border-radius:6px; padding:10px 14px; font-size:13px;
+         white-space:pre-wrap; text-align:left; }
+  .src { display:none; margin-top:14px; width:100%; min-height:220px;
+         font:12px/1.5 ui-monospace, Menlo, monospace; background:var(--bg);
+         color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:12px; }
+  body[data-src="1"] .src { display:block; }
+</style>
+</head>
+<body data-zoom="100" data-src="0">
+
+<header>
+  <h1>rd-chatBI 架构图</h1>
+  <div class="sub">
+    图内容读自 <code>./architecture.md</code>；阅读/打印用
+    <code>architecture_print.html</code>；讲稿见 <code>INTERVIEW.html</code>。
+  </div>
+</header>
+
+<div class="toolbar">
+  <span class="sub">缩放</span>
+  <button data-z="50">50%</button>
+  <button data-z="75">75%</button>
+  <button data-z="100" class="active">100%</button>
+  <button data-z="150">150%</button>
+  <span class="spacer"></span>
+  <button id="toggle-src">显示源码</button>
+  <button id="export-png">导出全部 PNG</button>
+</div>
+
+<main id="root"></main>
+
+<script type="module">
+const root = document.getElementById("root");
+
+let mermaid;
+try {
+  mermaid = (await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs")).default;
+  // 配色与 md2html.mjs 保持一致：内置 default 主题浅色下是一整套低对比浅紫，
+  // 节点文字和底色几乎糊在一起（实测），所以这里显式给定
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "loose",
+    theme: "base",
+    themeVariables: {
+      darkMode: false, background: "#ffffff", fontSize: "15px",
+      primaryColor: "#dbeafe", primaryTextColor: "#0b2545", primaryBorderColor: "#2563eb",
+      secondaryColor: "#f1f5f9", secondaryTextColor: "#0b2545", secondaryBorderColor: "#64748b",
+      tertiaryColor: "#f8fafc", tertiaryTextColor: "#0b2545", tertiaryBorderColor: "#94a3b8",
+      lineColor: "#334155", textColor: "#0b2545",
+      noteBkgColor: "#fef3c7", noteTextColor: "#78350f", noteBorderColor: "#d97706",
+      actorBkg: "#dbeafe", actorTextColor: "#0b2545", actorBorder: "#2563eb",
+      signalColor: "#334155", signalTextColor: "#0b2545",
+      labelBoxBkgColor: "#fef3c7", labelBoxBorderColor: "#d97706", labelTextColor: "#78350f",
+      sequenceNumberColor: "#ffffff",
+      clusterBkg: "#f8fafc", clusterBorder: "#94a3b8",
+    },
+    // subGraphTitleMargin：不加的话进入子图的箭头会压在标题文字上
+    flowchart: { htmlLabels: true, useMaxWidth: true, padding: 14,
+                 nodeSpacing: 45, rankSpacing: 50,
+                 subGraphTitleMargin: { top: 10, bottom: 16 } },
+    sequence: { useMaxWidth: true, mirrorActors: false, actorMargin: 60 },
+  });
+} catch (e) {
+  root.innerHTML = `<section><div class="err">mermaid 加载失败（多半是没联网）。\n${e}</div></section>`;
+}
+
+// ── 从 architecture.md 解析出各图 ────────────────────────────────
+let markdown = "";
+try {
+  const res = await fetch("./architecture.md");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  markdown = await res.text();
+} catch (e) {
+  root.innerHTML = `<section><div class="err">读不到 ./architecture.md（${e.message}）。
+file:// 协议下浏览器会以 CORS 为由拒绝读取本地文件。请起一个静态服务：
+    cd docs/diagrams && python3 -m http.server 8080
+    → http://localhost:8080/architecture.html
+或者直接看 architecture_print.html（图已内联，双击即开）。</div></section>`;
+}
+
+if (markdown && mermaid) {
+  const diagrams = [];
+  const re = /^## 图 (\d+) — (.+?)$\n+```mermaid\n([\s\S]*?)```/gm;
+  let m;
+  while ((m = re.exec(markdown))) {
+    diagrams.push({ num: m[1], title: `图 ${m[1]} — ${m[2]}`, code: m[3].trim() });
+  }
+
+  // 先挂容器（含源码框），再逐张渲染
+  diagrams.forEach((d, i) => {
+    const sec = document.createElement("section");
+    sec.id = `fig${d.num}`;
+    sec.innerHTML = `<h2>${d.title}</h2><div class="diagram"></div><pre class="src"></pre>`;
+    sec.querySelector(".src").textContent = d.code;
+    root.appendChild(sec);
+  });
+
+  for (let i = 0; i < diagrams.length; i++) {
+    const d = diagrams[i];
+    const box = document.querySelector(`#fig${d.num} .diagram`);
+    try {
+      const { svg } = await mermaid.render(`mmd-${i}`, d.code);
+      box.innerHTML = svg;
+    } catch (e) {
+      box.innerHTML = `<div class="err">渲染失败：${e.message || e}</div>`;
+    }
+  }
+}
+
+// ── 交互 ────────────────────────────────────────────────────────
+document.querySelectorAll("[data-z]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.body.dataset.zoom = btn.dataset.z;
+    document.querySelectorAll("[data-z]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
+});
+
+document.getElementById("toggle-src").addEventListener("click", (e) => {
+  const on = document.body.dataset.src === "1";
+  document.body.dataset.src = on ? "0" : "1";
+  e.target.textContent = on ? "显示源码" : "隐藏源码";
+});
+
+document.getElementById("export-png").addEventListener("click", async () => {
+  for (const sec of document.querySelectorAll("section")) {
+    const svg = sec.querySelector("svg");
+    if (!svg) continue;
+    try {
+      const xml = new XMLSerializer().serializeToString(svg);
+      const url = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+
+      const scale = 2;
+      const w = svg.viewBox.baseVal.width || svg.getBoundingClientRect().width;
+      const h = svg.viewBox.baseVal.height || svg.getBoundingClientRect().height;
+      const canvas = document.createElement("canvas");
+      canvas.width = w * scale; canvas.height = h * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";        // 透明底贴进 PPT 会变黑
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+
+      const a = document.createElement("a");
+      a.download = `${sec.id}.png`;
+      a.href = canvas.toDataURL("image/png");
+      a.click();
+      await new Promise(r => setTimeout(r, 300));
+    } catch (e) {
+      alert(`${sec.id} 导出失败：${e.message || e}\n可改用右键另存或截屏。`);
+    }
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>面试速记（口述版）</title>
+<style>
+:root {
+  --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --muted:#656d76;
+  --line:#d8dee4; --accent:#0969da; --code-bg:#f0f2f5;
+  --tbl-head:#f6f8fa; --quote:#d0d7de;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0d1117; --card:#161b22; --ink:#e6edf3; --muted:#8b949e;
+    --line:#30363d; --accent:#58a6ff; --code-bg:#1c2128;
+    --tbl-head:#1c2128; --quote:#3d444d;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin:0; padding:0;
+  background:var(--bg); color:var(--ink);
+  font:16px/1.75 -apple-system, BlinkMacSystemFont, "PingFang SC",
+       "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap { max-width:960px; margin:0 auto; padding:48px 24px 120px; }
+
+/* ── 标题 ── */
+h1,h2,h3,h4 { line-height:1.35; font-weight:650; margin:2em 0 .7em; }
+h1 { font-size:1.9em; margin-top:0; padding-bottom:.4em; border-bottom:1px solid var(--line); }
+h2 { font-size:1.45em; padding-bottom:.35em; border-bottom:1px solid var(--line); }
+h3 { font-size:1.18em; }
+h4 { font-size:1.02em; color:var(--muted); }
+h1+p,h2+p,h3+p { margin-top:.4em; }
+
+/* ── 正文 ── */
+p { margin:.85em 0; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+strong { font-weight:650; }
+hr { border:0; border-top:1px solid var(--line); margin:2.5em 0; }
+ul,ol { padding-left:1.6em; margin:.8em 0; }
+li { margin:.3em 0; }
+li > p { margin:.3em 0; }
+img { max-width:100%; height:auto; border-radius:6px; }
+
+/* ── 引用块：★ 提示都写在这里，要显眼但别刺眼 ── */
+blockquote {
+  margin:1.2em 0; padding:.6em 1.1em;
+  border-left:4px solid var(--accent);
+  background:var(--code-bg); border-radius:0 6px 6px 0;
+  color:var(--ink);
+}
+blockquote > p:first-child { margin-top:.2em; }
+blockquote > p:last-child { margin-bottom:.2em; }
+
+/* ── 行内代码：中文文档里默认样式对比度太弱，单独加重 ── */
+code {
+  font-family:ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size:.875em; padding:.18em .42em;
+  background:var(--code-bg); border:1px solid var(--line);
+  border-radius:5px; white-space:nowrap;
+}
+/* 代码块里的 code 不再叠加边框/底色 */
+pre {
+  margin:1.2em 0; padding:16px 18px; overflow-x:auto;
+  background:var(--code-bg); border:1px solid var(--line);
+  border-radius:8px; line-height:1.55;
+}
+pre code {
+  padding:0; background:none; border:0; white-space:pre;
+  font-size:.86em; line-height:1.6;
+}
+
+/* ── 表格：Markdown 表格默认挤在一起，这里给足留白 ── */
+table {
+  border-collapse:collapse; width:100%; margin:1.4em 0;
+  font-size:.94em; display:block; overflow-x:auto;
+}
+th,td {
+  border:1px solid var(--line); padding:9px 13px;
+  text-align:left; vertical-align:top;
+}
+th { background:var(--tbl-head); font-weight:650; white-space:nowrap; }
+tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transparent); }
+
+/* ── mermaid 图 ── */
+.mermaid {
+  margin:1.6em 0; padding:18px; text-align:center;
+  /* ★ 固定白底：图内配色锁死浅色方案，背景就必须跟着白，
+     否则深色模式下浅色节点会浮在深色画布上、边缘发灰 */
+  background:#fff; border:1px solid var(--line); border-radius:10px;
+  overflow-x:auto;
+}
+.mermaid svg { max-width:100%; height:auto; }
+
+/* ── 返回顶部 ── */
+#top {
+  position:fixed; right:22px; bottom:22px;
+  width:42px; height:42px; border-radius:50%;
+  display:none; align-items:center; justify-content:center;
+  background:var(--card); border:1px solid var(--line); color:var(--ink);
+  cursor:pointer; font-size:17px; box-shadow:0 2px 10px rgba(0,0,0,.12);
+}
+#top.show { display:flex; }
+#top:hover { border-color:var(--accent); color:var(--accent); }
+
+@media print {
+  body { background:#fff; }
+  .wrap { max-width:none; padding:0; }
+  #top { display:none !important; }
+  pre,table,.mermaid { break-inside:avoid; }
+}
+</style>
+</head>
+<body>
+<main class="wrap">
+<h1 id="面试速记口述版">面试速记（口述版）</h1>
+<blockquote>
+<p>这版是<strong>用嘴说的</strong>，不是用眼看的。面试前十分钟翻一遍。
+细节查 <a href="INTERVIEW.md"><code>INTERVIEW.md</code></a>，这份只负责让你<strong>开口不卡壳</strong>。</p>
+</blockquote>
+<hr>
+<h2 id="一开场30-秒背下来">一、开场：30 秒，背下来</h2>
+<blockquote>
+<p>「我做的项目叫 rd-chatBI，一个 NL2SQL 平台。
+业务同事用大白话提问，比如『目前有多少个未关闭的严重问题单』，
+系统自己写 SQL、查库，返回数据表加图表。</p>
+<p>核心就两件事：
+第一，<strong>让大模型看懂我们的表</strong>——它本来不认识我们有哪些表、字段叫什么、指标怎么算；
+第二，<strong>大模型写出来的 SQL 不能全信</strong>，得有代码把门。」</p>
+</blockquote>
+<p>说完这两句就停，等对方问。<strong>别主动展开。</strong></p>
+<hr>
+<h2 id="二九步流水线就记九个字">二、九步流水线：就记九个字</h2>
+<blockquote>
+<h3 id="切找并筛补写查改跑">切　找　并　筛　补　写　查　改　跑</h3>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>字</th>
+<th>干嘛的</th>
+<th>谁在干</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>切</strong></td>
+<td>把问题切词，抽出关键词</td>
+<td>jieba，纯 CPU，不要钱</td>
+</tr>
+<tr>
+<td><strong>找</strong></td>
+<td>找表、找字段、找指标、找枚举值</td>
+<td>三路同时找（见下）</td>
+</tr>
+<tr>
+<td><strong>并</strong></td>
+<td>把三路结果合并成一张完整表结构</td>
+<td>查 PG 元数据</td>
+</tr>
+<tr>
+<td><strong>筛</strong></td>
+<td>让大模型从候选里挑出<strong>最小</strong>集合</td>
+<td>LLM，省 token</td>
+</tr>
+<tr>
+<td><strong>补</strong></td>
+<td>补上今天是几号、数据库版本</td>
+<td>纯计算</td>
+</tr>
+<tr>
+<td><strong>写</strong></td>
+<td>让大模型写 SQL</td>
+<td>LLM</td>
+</tr>
+<tr>
+<td><strong>查</strong></td>
+<td><strong>安全校验</strong> + 让数据库 EXPLAIN 试一下</td>
+<td>代码，不是 LLM</td>
+</tr>
+<tr>
+<td><strong>改</strong></td>
+<td>报错了让大模型改一版（只给一次机会）</td>
+<td>LLM</td>
+</tr>
+<tr>
+<td><strong>跑</strong></td>
+<td>只读事务执行，加行级权限，删敏感列</td>
+<td>数据库</td>
+</tr>
+</tbody></table>
+<p><strong>记忆钩子</strong>：前四步「<strong>备料</strong>」→ 中间两步「<strong>动手</strong>」→ 后三步「<strong>验货交货</strong>」。</p>
+<ul>
+<li>备料：切、找、并、筛 —— 把该用到的表字段指标凑齐</li>
+<li>动手：补、写 —— 补上下文、写出 SQL</li>
+<li>验货交货：查、改、跑 —— <strong>安全校验在这儿</strong>，过了才执行</li>
+</ul>
+<hr>
+<h2 id="三三路召回记一句话">三、三路召回：记一句话</h2>
+<blockquote>
+<p>查数据无非搞清楚三件事：<strong>查哪些列？值长什么样？口径怎么算？</strong></p>
+</blockquote>
+<ul>
+<li><strong>查哪些列</strong> → 走向量检索（Milvus），因为列名是语义匹配</li>
+<li><strong>值长什么样</strong> → 走 Elasticsearch 全文检索，因为「未关闭」「critical」是精确字面量，向量检索反而不准</li>
+<li><strong>口径怎么算</strong> → 也走向量（Milvus），指标定义是业务语言</li>
+</ul>
+<p><strong>为什么是三个库不是一个大杂烩</strong>：东西的性质不一样，就该用不一样的存储。</p>
+<hr>
+<h2 id="四四层防线记八个字">四、四层防线：记八个字</h2>
+<blockquote>
+<h3 id="看不见拦得住捞得回兜得底">看不见　拦得住　捞得回　兜得底</h3>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>口诀</th>
+<th>第几层</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>看不见</strong></td>
+<td>Prompt</td>
+<td>敏感列<strong>压根不写进元数据</strong>，大模型不知道有这东西</td>
+</tr>
+<tr>
+<td><strong>拦得住</strong></td>
+<td>AST 校验</td>
+<td>sqlglot 真解析成语法树：只准 SELECT、只准一条、<code>LIMIT</code> 强制压到 100、危险函数拉黑</td>
+</tr>
+<tr>
+<td><strong>捞得回</strong></td>
+<td>执行层</td>
+<td><code>SELECT *</code> 会绕过上面两层（没有列名可查），所以<strong>结果出来先删敏感列</strong>，再给用户和摘要模型</td>
+</tr>
+<tr>
+<td><strong>兜得底</strong></td>
+<td>数据库</td>
+<td>只读账号，前三层全被绕过也写不进删不掉</td>
+</tr>
+</tbody></table>
+<p><strong>为什么第四层前面还有三层</strong>：只读账号挡得住&quot;改数据&quot;，挡不住&quot;偷看数据&quot;。</p>
+<hr>
+<h2 id="五数字阶梯9---4---3---2---1">五、数字阶梯：9 - 4 - 3 - 2 - 1</h2>
+<blockquote>
+<p>对方问「能概括一下吗」，报这串数字。</p>
+</blockquote>
+<ul>
+<li><strong>9</strong> 步流水线</li>
+<li><strong>4</strong> 层安全防线</li>
+<li><strong>3</strong> 路并行召回</li>
+<li><strong>2</strong> 组并行（召回一组、过滤一组）</li>
+<li><strong>1</strong> 轮纠错（改完必须重新过校验，只给一次机会）</li>
+</ul>
+<p><strong>1 那个要说清楚</strong>：「改错了也是大模型写的，不能因为它是改出来的就直接执行，得回去重新检查。」</p>
+<hr>
+<h2 id="六听不懂时掏出来的类比">六、听不懂时掏出来的类比</h2>
+<p>想不起来术语，就说这个：</p>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>怎么说</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>为什么要有召回</td>
+<td>大模型不认识我们公司的表。<strong>就像让一个没来过你家的人找东西</strong>，你得先告诉他东西大概在哪个柜子，不能把整个家翻一遍。</td>
+</tr>
+<tr>
+<td>为什么三路并行</td>
+<td>找东西的三条线索互不相干，<strong>没道理排队做</strong>。</td>
+</tr>
+<tr>
+<td>为什么执行前要 EXPLAIN</td>
+<td>相当于<strong>先让数据库&quot;读一遍&quot;</strong>，不真跑。语法错、列名错立刻发现，不花数据成本。</td>
+</tr>
+<tr>
+<td>行级权限</td>
+<td>工程师只能看自己负责的域。<strong>不问 SQL 写了什么，一律再 AND 一个条件上去</strong>——因为用户能诱导大模型写出任意责任域。</td>
+</tr>
+<tr>
+<td>连接池</td>
+<td>查一次库像打一通电话。原来是<strong>每次拨号、通话、挂断</strong>；现在每部电话机<strong>常备几条线路</strong>，打完不挂。</td>
+</tr>
+<tr>
+<td>熔断器</td>
+<td><strong>家里的空气开关</strong>。大模型服务商挂了，连续失败五次就跳闸，后面的请求毫秒级返回「稍后重试」，不再去敲那扇已经坏了的门。</td>
+</tr>
+<tr>
+<td>Redis 存对话</td>
+<td>服务员的记事本，原来是<strong>各自揣兜里</strong>（换个服务员就不知道你刚才问了啥），现在<strong>放到门口公共柜</strong>，谁接待都能翻。</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="七高频追问一句话答">七、高频追问：一句话答</h2>
+<p><strong>问：为什么用 LangGraph，不用 Agent？</strong></p>
+<blockquote>
+<p>「流程是<strong>死的</strong>——先召回、再过滤、再生成，每一步都定好了。让 AI 现场决定调哪个工具，反而不可控、也没法测。」</p>
+</blockquote>
+<p><strong>问：<code>SELECT *</code> 怎么防？泄密了怎么办？</strong></p>
+<blockquote>
+<p>「两头堵。<strong>元数据里就没有这列</strong>，大模型不知道；万一它写 <code>SELECT *</code>，<strong>结果出来先删掉敏感列</strong>，再给用户和摘要模型。」</p>
+</blockquote>
+<p><strong>问：<code>LIMIT</code> 为什么要用 AST，字符串判断不行吗？</strong></p>
+<blockquote>
+<p>「字符串判断有三个洞：写 <code>LIMIT 99999999</code> 照样拖库；列名碰巧叫 <code>limit</code> 会误判；末尾加个 <code>--</code> 注释，补的 LIMIT 直接被吞掉。」</p>
+</blockquote>
+<p><strong>问：大模型写错了怎么办？</strong></p>
+<blockquote>
+<p>「三步。<strong>先 EXPLAIN 试</strong>，不真跑，语法列名错立刻发现；<strong>错了让大模型改</strong>，只给一次；<strong>改完必须重新过校验</strong>，而且原始报错只进日志，不返回给用户——错误文本会暴露表结构。」</p>
+</blockquote>
+<p><strong>问：怎么保证改了代码不出问题？</strong></p>
+<blockquote>
+<p>「<strong>90 道评测题进 CI</strong>。而且离线那道门禁是纯函数，不连库：每条标准答案的 SQL 必须先过安全层——它被拒就两种可能，要么题目写错，要么<strong>安全层误伤了合法查询</strong>，两种都得拦在合并前。」</p>
+</blockquote>
+<p><strong>问：并发上有什么考虑？</strong></p>
+<blockquote>
+<p>「限流走 Redis 滑动窗口，跨进程；连接池按事件循环分区，每条连接不跨循环用；大模型调用有熔断；SSE 一旦客户端断开就取消任务，<strong>不然剩下的几次大模型调用会全跑完，白烧钱</strong>。」</p>
+</blockquote>
+<hr>
+<h2 id="八主动认怂加分项一定要说">八、主动认怂（加分项，一定要说）</h2>
+<p>说完优点，自己接一句：</p>
+<blockquote>
+<p>「有几个还没做的：
+一是数据库连接串<strong>明文放在配置里</strong>，生产要接密钥管理；
+二是业务库改了表结构，元数据<strong>不会自动跟进</strong>，现在得手动重跑构建；
+三是图表类型是模型单次推荐的，<strong>没有规则兜底</strong>，可能出现分类太多还画饼图。」</p>
+</blockquote>
+<p><strong>说得出局限，比说得出优点更让人信。</strong></p>
+<hr>
+<h2 id="九最后白板上画什么">九、最后：白板上画什么</h2>
+<p><strong>只画这条线，别画细节：</strong></p>
+<div class="mermaid">
+flowchart LR
+    A["大白话提问"] --&gt; B["① 找回相关信息"]
+    B --&gt; C["② 筛出最小集合"]
+    C --&gt; D["③ 生成 SQL"]
+    D --&gt; E{"④ 安全校验"}
+    E --&gt;|"过了"| F["⑤ 执行"]
+    E --&gt;|"没过"| G["改一版"]
+    G -.-&gt;|"改完重新查"| E
+    F --&gt; H["数据 + 图表 + 摘要"]
+</div>
+
+
+
+<p>画完嘴上补一句：</p>
+<blockquote>
+<p>「<strong>九步</strong>都在这条线上。
+右边那两个红黄框是重点：<strong>校验是代码在做，不是大模型</strong>；
+<strong>执行前还得再套一层行级权限</strong>，工程师只能看自己负责的域。」</p>
+</blockquote>
+<hr>
+<h2 id="十如果只剩三分钟">十、如果只剩三分钟</h2>
+<p>背这四句就够：</p>
+<ol>
+<li>「<strong>NL2SQL 平台</strong>，大白话查库，自动出图表。」</li>
+<li>「<strong>切找并筛补写查改跑</strong>，九步。」</li>
+<li>「<strong>看不见、拦得住、捞得回、兜得底</strong>，四层防线。」</li>
+<li>「<strong>90 道评测题进了 CI</strong>，改代码会红。」</li>
+</ol>
+
+</main>
+<button id="top" title="返回顶部">↑</button>
+<script type="module">
+const hasMermaid = document.querySelector(".mermaid");
+if (hasMermaid) {
+  try {
+    const mermaid = (await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs")).default;
+    // 不用 mermaid 内置的 default/dark 主题：default 在浅色底上是一整套
+    // 低对比的浅紫填充，节点文字和底色几乎糊在一起（实测截图确认）。
+    // 这里给两套显式配色，保证图表在两种模式下都可读。
+    const light = {
+      darkMode: false, background: "#ffffff", fontSize: "15px",
+      primaryColor: "#dbeafe", primaryTextColor: "#0b2545", primaryBorderColor: "#2563eb",
+      secondaryColor: "#f1f5f9", secondaryTextColor: "#0b2545", secondaryBorderColor: "#64748b",
+      tertiaryColor: "#f8fafc", tertiaryTextColor: "#0b2545", tertiaryBorderColor: "#94a3b8",
+      lineColor: "#334155", textColor: "#0b2545",
+      noteBkgColor: "#fef3c7", noteTextColor: "#78350f", noteBorderColor: "#d97706",
+      actorBkg: "#dbeafe", actorTextColor: "#0b2545", actorBorder: "#2563eb",
+      signalColor: "#334155", signalTextColor: "#0b2545",
+      labelBoxBkgColor: "#fef3c7", labelBoxBorderColor: "#d97706", labelTextColor: "#78350f",
+      sequenceNumberColor: "#ffffff",
+      clusterBkg: "#f8fafc", clusterBorder: "#94a3b8",
+    };
+    const dark = {
+      darkMode: true, background: "#161b22", fontSize: "15px",
+      primaryColor: "#1f3a5f", primaryTextColor: "#e6edf3", primaryBorderColor: "#58a6ff",
+      secondaryColor: "#21262d", secondaryTextColor: "#e6edf3", secondaryBorderColor: "#8b949e",
+      tertiaryColor: "#1c2128", tertiaryTextColor: "#e6edf3", tertiaryBorderColor: "#6e7681",
+      lineColor: "#8b949e", textColor: "#e6edf3",
+      noteBkgColor: "#4d3800", noteTextColor: "#fde68a", noteBorderColor: "#d97706",
+      actorBkg: "#1f3a5f", actorTextColor: "#e6edf3", actorBorder: "#58a6ff",
+      signalColor: "#8b949e", signalTextColor: "#e6edf3",
+      labelBoxBkgColor: "#4d3800", labelBoxBorderColor: "#d97706", labelTextColor: "#fde68a",
+      sequenceNumberColor: "#0d1117",
+      clusterBkg: "#1c2128", clusterBorder: "#6e7681",
+    };
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "loose",
+      // ★ 图表配色固定用浅色方案：讲稿里的图要能导出贴 PPT，
+      //   而 PPT 白底是绝对多数；跟随系统会让同一张图在两种模式下颜色不同。
+      //   （页面正文仍然跟随系统深浅，只有画布固定白底。）
+      theme: "base",
+      themeVariables: light,
+      // subGraphTitleMargin 必须有：默认子图标题贴着边框，进入子图的箭头
+      // 会直接压在标题文字上（实测："9 阶段流水线"/"存储分工" 被箭头划掉）
+      flowchart: {
+        htmlLabels: true, useMaxWidth: true,
+        padding: 14, nodeSpacing: 45, rankSpacing: 50,
+        subGraphTitleMargin: { top: 10, bottom: 16 },
+      },
+      sequence: { useMaxWidth: true, mirrorActors: false, actorMargin: 60 },
+    });
+    await mermaid.run({ querySelector: ".mermaid" });
+  } catch (e) {
+    // 离线时保留源码，至少能看到内容而不是空白
+    document.querySelectorAll(".mermaid").forEach(el => {
+      el.innerHTML = '<pre style="text-align:left;margin:0"><code>'
+        + el.textContent.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))
+        + '</code></pre>';
+    });
+    console.warn("mermaid 加载失败，已降级为源码显示：", e);
+  }
+}
+const top = document.getElementById("top");
+addEventListener("scroll", () => top.classList.toggle("show", scrollY > 400));
+top.onclick = () => scrollTo({ top: 0, behavior: "smooth" });
+</script>
+</body>
+</html>

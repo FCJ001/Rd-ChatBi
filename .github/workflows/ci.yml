@@ -1,0 +1,78 @@
+# CI：测试 + 离线评测门禁
+#
+# 离线评测（eval/run_nl2sql_eval.py 默认模式）是纯函数：校验案例结构 +
+# golden SQL 必须能通过 SQL 安全部 —— golden 被拒只有两种可能：
+# 案例写错或安全层误伤合法查询，两者都必须拦在合并前。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: NL2SQL offline eval gate
+        run: python eval/run_nl2sql_eval.py
+
+  # hospital_demo 的 golden_sql 在真实库上跑通才算数。
+  #
+  # ★ 为什么只测 hospital_demo：它的库和造数脚本都在本仓库
+  #   （scripts/init_demo_data.py），CI 能从零建出来。
+  #   rd_agent 的 schema 属于兄弟仓库 rd-agent-platform（本仓库不持有其建表 DDL），
+  #   在这里伪造一份建表脚本会跟真实 schema 漂移，反而制造假通过 ——
+  #   所以 rd_agent 的实况校验留在本地/部署环境跑：
+  #       python eval/run_nl2sql_eval.py --live --project rd_agent
+  eval-cases:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rdagent
+          POSTGRES_PASSWORD: rdagent123
+          POSTGRES_DB: rd_agent
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DB_HOST: localhost
+      DB_USER: rdagent
+      DB_PASSWORD: rdagent123
+      DEMO_DB_USER: rdagent
+      DEMO_DB_PASSWORD: rdagent123
+      DEMO_DB_NAME: chatbi_demo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 建库 + 造数 + 校验 40 条 hospital_demo 案例的 golden SQL
+      - name: Init demo data
+        run: python scripts/init_demo_data.py --drop
+
+      - name: Verify hospital_demo cases against live DB
+        run: python scripts/make_hospital_cases.py

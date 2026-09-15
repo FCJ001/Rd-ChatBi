@@ -1,0 +1,13 @@
+{
+  "name": "rd-chatbi",
+  "private": true,
+  "type": "module",
+  "description": "文档工具依赖（md → html 转换）。★ 仅文档用，服务运行时不依赖 node。",
+  "scripts": {
+    "docs": "node scripts/md2html.mjs --all"
+  },
+  "devDependencies": {
+    "marked": "^15.0.0",
+    "marked-gfm-heading-id": "^4.0.0"
+  }
+}
