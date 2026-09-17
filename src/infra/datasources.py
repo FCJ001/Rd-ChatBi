@@ -36,6 +36,9 @@ class DataSourceConfig:
     role_rules: dict[str, Any] = field(default_factory=dict)
     # 物理存在但元数据故意隐藏的敏感列：SQL 文本拦截 + 执行层结果列过滤
     sensitive_columns: list[str] = field(default_factory=list)
+    # 数据源级 LLM 配置：{"provider": "deepseek", "model": "deepseek-chat"}
+    # 缺省回退全局 CHAT_MODEL —— 改库 + 清缓存即在线切换，无需重启
+    llm_config: dict[str, Any] = field(default_factory=dict)
     description: str = ""
     enabled: bool = True
 
@@ -113,6 +116,7 @@ def _to_config(row) -> DataSourceConfig:
         role_rules=row.role_rules or {},
         # getattr：迁移前旧库没有该列时不至于整体不可用
         sensitive_columns=list(getattr(row, "sensitive_columns", None) or []),
+        llm_config=dict(getattr(row, "llm_config", None) or {}),
         description=row.description or "",
         enabled=bool(row.enabled),
     )

@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import get_embedding_model, get_llm
+from src.api.deps import get_embedding_model, get_llm, get_llm_for_datasource
 from src.core.base_schema import ResponseSchema
 from src.core.deps import UserContext, get_current_user
 from src.core.exceptions import BizException
@@ -298,7 +298,7 @@ async def bi_query(
 ):
     """自然语言数据查询，返回 SQL + 数据表 + 图表 + 摘要"""
     db, ds = dw
-    llm = get_llm()
+    llm = get_llm_for_datasource(ds.llm_config)
     ctx = await get_context(user.user_id, user.project_id, req.session_id)
 
     # 按数据源动态生成 schema（多数据源不再硬编码表结构）
@@ -403,7 +403,7 @@ async def _build_pipeline_context(
     meta_db = AsyncSessionLocal()
 
     ctx = {
-        "llm": get_llm(),
+        "llm": get_llm_for_datasource(ds.llm_config),
         "embedding_model": get_embedding_model(),
         "milvus_client": milvus,
         "milvus_column_repo": MilvusColumnRepository(milvus, prefix=ds.milvus_prefix),

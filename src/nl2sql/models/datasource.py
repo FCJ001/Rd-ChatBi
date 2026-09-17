@@ -20,5 +20,6 @@ class BiDatasource(BaseModel):
     es_prefix = Column(String(50), nullable=False, default="chatbi", comment="ES index 前缀")
     role_rules = Column(JSON, nullable=True, comment="角色行级过滤规则（数据驱动，见 security.apply_role_filter）")
     sensitive_columns = Column(JSON, nullable=True, comment="敏感列名列表（物理存在但元数据隐藏）：SQL 文本拦截 + 执行层结果列过滤")
+    llm_config = Column(JSON, nullable=True, comment="数据源级 LLM 配置：{provider, model}，缺省回退全局 CHAT_MODEL")
     description = Column(String(500), default="", comment="项目说明")
     enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
