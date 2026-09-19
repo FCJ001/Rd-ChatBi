@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from elasticsearch import AsyncElasticsearch
+from elasticsearch import NotFoundError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -51,7 +52,11 @@ def _dim_target(meta: MetaConfig, fk_table: str, desc: str) -> tuple[str, str] |
         return None
     dim_source, readable = m.group(1), m.group(2)   # owner_domains.id / owner_domains.name
     dim_table = dim_source.split(".")[0]
-    read_table, read_col = readable.split(".", 1)
+    if "." in readable:
+        read_table, read_col = readable.split(".", 1)
+    else:
+        # 「→ vin（车架号）」这种省略表前缀的写法：维表就是目标表
+        read_table, read_col = dim_table, readable
 
     t = next((x for x in meta.tables if x.name == read_table), None)
     if t is None:
@@ -98,6 +103,7 @@ async def main(datasource: str, dry_run: bool = False) -> int:
     engine = create_async_engine(ds.dsn)
     es = AsyncElasticsearch(f"http://{settings.ES_HOST}:{settings.ES_PORT}")
     total = 0
+    skipped = 0
     try:
         for fk_t, fk_c, dim_col, _pk in pairs:
             dim_table, dim_colname = dim_col.split(".", 1)
@@ -113,24 +119,28 @@ async def main(datasource: str, dry_run: bool = False) -> int:
             for r in rows:
                 label = str(r["label"]).strip()
                 doc_id = f"{dim_table}.{dim_colname}.db.{label}"
-                await es.update(
-                    index=index, id=doc_id,
-                    body={"doc": {"enum_label": str(r["id"]), "fk_column": f"{fk_t}.{fk_c}"}},
-                    refresh=False,
-                )
-                total += 1
+                try:
+                    await es.update(
+                        index=index, id=doc_id,
+                        body={"doc": {"enum_label": str(r["id"]), "fk_column": f"{fk_t}.{fk_c}"}},
+                        refresh=False,
+                    )
+                    total += 1
+                except NotFoundError:
+                    # 该值未入 ES（如维表 distinct 值超过 200 护栏被整列跳过）——跳过
+                    skipped += 1
         await es.indices.refresh(index=index)
     finally:
         await engine.dispose()
         await es.close()
 
-    print(f"\n已为 {total} 条维表记录补上 enum_label（ID）")
+    print(f"\n已为 {total} 条维表记录补上 enum_label（ID），{skipped} 条因未入 ES 跳过")
     return total
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="补全外键枚举值的 ID ↔ 名称关联")
-    ap.add_argument("--datasource", default="rd_agent")
+    ap.add_argument("--datasource", default="auto_full")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     asyncio.run(main(args.datasource, args.dry_run))

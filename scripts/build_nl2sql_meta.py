@@ -73,7 +73,7 @@ VALUE_MAPPING = {
 
 async def main(datasource: str | None = None, dry_run: bool = False, rebuild: bool = False):
     settings = get_settings()
-    code = datasource or "rd_agent"
+    code = datasource or "auto_full"
     yaml_path = Path(__file__).parents[1] / "conf" / "projects" / f"{code}.yaml"
     meta = MetaConfig.from_yaml(yaml_path)
     if meta.datasource is None:
@@ -165,13 +165,15 @@ async def _upsert_datasource(db: AsyncSession, ds) -> int:
         row.milvus_prefix = ds.milvus_prefix
         row.es_prefix = ds.es_prefix
         row.role_rules = ds.role_rules
+        row.sensitive_columns = ds.sensitive_columns
         row.description = ds.description
         row.enabled = True
     else:
         row = BiDatasource(
             code=ds.code, name=ds.name, dsn=ds.dsn,
             milvus_prefix=ds.milvus_prefix, es_prefix=ds.es_prefix,
-            role_rules=ds.role_rules, description=ds.description, enabled=True,
+            role_rules=ds.role_rules, sensitive_columns=ds.sensitive_columns,
+            description=ds.description, enabled=True,
         )
         db.add(row)
         await db.flush()
@@ -963,7 +965,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="NL2SQL 元数据构建（多数据源）")
-    parser.add_argument("--datasource", default="rd_agent", help="数据源编码（conf/projects/{code}.yaml）")
+    parser.add_argument("--datasource", default="auto_full", help="数据源编码（conf/projects/{code}.yaml）")
     parser.add_argument("--dry-run", action="store_true", help="只打印，不写入")
     parser.add_argument("--rebuild", action="store_true", help="全量重建（删光本数据源数据）")
     args = parser.parse_args()

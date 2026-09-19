@@ -39,13 +39,11 @@ CASES_DIR = REPO_ROOT / "eval" / "cases"
 # 数据源 → 回流案例文件。★ 与 eval/run_nl2sql_eval.py 的
 # CASE_FILES_BY_PROJECT 里的 *_reflow 条目必须一致（tests 会锁这一点）。
 REFLOW_FILE_BY_DS = {
-    "rd_agent": CASES_DIR / "nl2sql_cases_reflow.json",
     "hospital_demo": CASES_DIR / "nl2sql_cases_reflow_hospital.json",
 }
 
 # 存量案例文件：seed 时灌进表，标 exported（它们已经在线上了）
 SEED_FILES_BY_DS = {
-    "rd_agent": CASES_DIR / "nl2sql_cases.json",
     "hospital_demo": CASES_DIR / "nl2sql_cases_hospital.json",
 }
 

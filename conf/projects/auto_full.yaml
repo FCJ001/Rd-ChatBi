@@ -1,0 +1,5056 @@
+# ============================================================
+# 数据源：auto_full — 汽车全域业务库（由 scripts/gen_auto_full.py 生成，勿手改）
+#
+# 127 张表 / 13 子域（研发ALM/零部件BOM/采购/整车主数据/生产制造/QMS质量/
+# 销售/售后/召回/车联网OTA/三电电池/智驾测试/财务），~180 万行确定性种子数据。
+# 用途：百表级 schema 召回压测 —— 表多且语义相近（问题/缺陷/故障/投诉/召回），
+# 逼 recall_columns / filter_tables 真正做 discrimination。
+#
+# ★ vin / cust_name / cust_phone / cust_id_number 物理存在但元数据故意不定义
+#   （Prompt 层 + 执行层双防线，对齐 rd_agent 的设计）
+# ★ plant_id / region_id 是行级权限列：engineer 按 plant_id、sales 按 region_id 隔离
+# ============================================================
+
+datasource:
+  code: auto_full
+  name: 汽车全域业务库
+  description: 汽车全价值链 demo 库（研发/供应链/制造/质量/销售/售后/召回/车联网/三电/智驾/财务）
+  dsn: postgresql+asyncpg://rdagent:rdagent123@localhost:15432/auto_full
+  milvus_prefix: auto_full
+  es_prefix: auto_full
+  sensitive_columns: [vin, cust_name, cust_phone, cust_id_number]
+  role_rules:
+    default: deny
+    roles:
+      admin: all
+      engineer:
+        column: plant_id
+        param: plant_id
+      sales:
+        column: region_id
+        param: region_id
+      customer: deny
+
+tables:
+  - name: veh_brands
+    role: dim
+    description: 汽车品牌
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "品牌名称"
+        alias: ["品牌", "厂牌"]
+        sync: true
+      - name: country
+        type: VARCHAR(30)
+        role: dimension
+        description: "品牌国别"
+        alias: ["国家"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: veh_energy_types
+    role: dim
+    description: 动力类型
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(20)
+        role: dimension
+        description: "动力类型名称"
+        alias: ["能源类型", "动力形式", "能源"]
+        sync: true
+      - name: note
+        type: VARCHAR(100)
+        role: dimension
+        description: "说明"
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: veh_model_series
+    role: dim
+    description: 车系
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(80)
+        role: dimension
+        description: "车系名称"
+        alias: ["车系"]
+        sync: true
+      - name: brand_id
+        type: BIGINT
+        role: foreign_key
+        description: "品牌ID，维表 veh_brands.id → veh_brands.name（品牌名称）；按品牌分组/展示时 JOIN veh_brands 取 name"
+        alias: ["品牌", "厂牌"]
+        sync: true
+        enum_source: veh_brands.name
+      - name: launch_date
+        type: TIMESTAMP
+        role: date
+        description: "上市时间"
+        alias: ["上市日期"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: veh_models
+    role: dim
+    description: 车型
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(80)
+        role: dimension
+        description: "车型名称"
+        alias: ["车型"]
+        sync: true
+      - name: series_id
+        type: BIGINT
+        role: foreign_key
+        description: "车系ID，维表 veh_model_series.id → name（车系名称）；按车系分组时 JOIN 取 name"
+        alias: ["车系"]
+        sync: true
+        enum_source: veh_model_series.name
+      - name: energy_type_id
+        type: BIGINT
+        role: foreign_key
+        description: "动力类型ID，维表 veh_energy_types.id → name（动力类型名称）；按动力类型分组时 JOIN 取 name"
+        alias: ["动力类型", "能源类型", "能源"]
+        sync: true
+        enum_source: veh_energy_types.name
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "车身形式（轿车/SUV/MPV/跑车）"
+        alias: ["车型级别", "级别", "车身类型"]
+        sync: true
+      - name: msrp
+        type: NUMERIC(14,2)
+        role: measure
+        description: "官方指导价（万元）"
+        alias: ["指导价", "售价", "价格"]
+      - name: range_km
+        type: INTEGER
+        role: measure
+        description: "续航里程（公里）"
+        alias: ["续航", "里程", "续航里程"]
+      - name: seat_count
+        type: INTEGER
+        role: dimension
+        description: "座位数"
+        alias: ["座位"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: veh_trims
+    role: dim
+    description: 款型配置
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(100)
+        role: dimension
+        description: "款型名称"
+        alias: ["款型", "配置版本", "版本"]
+        sync: true
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "车型ID，维表 veh_models.id → name（车型名称）；按车型分组时 JOIN 取 name"
+        alias: ["车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "款型售价（万元）"
+        alias: ["售价", "价格"]
+      - name: model_year
+        type: INTEGER
+        role: dimension
+        description: "年款"
+        alias: ["年款", "年型"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: veh_colors
+    role: dim
+    description: 车色
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(30)
+        role: dimension
+        description: "颜色名称"
+        alias: ["颜色", "车漆", "外观颜色"]
+        sync: true
+      - name: tone
+        type: VARCHAR(12)
+        role: dimension
+        description: "色调"
+        alias: ["色系"]
+        sync: true
+      - name: extra_fee
+        type: NUMERIC(10,2)
+        role: dimension
+        description: "选装加价（元）"
+  - name: veh_options
+    role: dim
+    description: 配置项
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(100)
+        role: dimension
+        description: "配置项名称"
+        alias: ["配置", "选装", "选装件"]
+        sync: true
+      - name: category
+        type: VARCHAR(12)
+        role: dimension
+        description: "配置类别"
+        alias: ["配置分类", "类别"]
+        sync: true
+      - name: is_advanced
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否高阶配置"
+        alias: ["高阶"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: veh_trim_options
+    role: fact
+    description: 款型-配置关系
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: trim_id
+        type: BIGINT
+        role: foreign_key
+        description: "款型ID，维表 veh_trims.id → name（款型名称）"
+        alias: ["款型"]
+        sync: true
+        enum_source: veh_trims.name
+      - name: option_id
+        type: BIGINT
+        role: foreign_key
+        description: "配置项ID，维表 veh_options.id → name（配置项名称）；按配置分组时 JOIN 取 name"
+        alias: ["配置", "配置项"]
+        sync: true
+        enum_source: veh_options.name
+      - name: is_standard
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否标配（否则为选装）"
+        alias: ["标配", "标配/选装"]
+        sync: true
+  - name: sal_regions
+    role: dim
+    description: 销售大区
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(20)
+        role: dimension
+        description: "大区名称"
+        alias: ["大区", "区域", "销售区域"]
+        sync: true
+      - name: manager
+        type: VARCHAR(50)
+        role: dimension
+        description: "大区经理"
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: sal_dealers
+    role: dim
+    description: 经销商
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(100)
+        role: dimension
+        description: "经销商名称"
+        alias: ["经销商", "门店", "4S店"]
+        sync: true
+      - name: region_id
+        type: BIGINT
+        role: foreign_key
+        description: "大区ID，维表 sal_regions.id → name（大区名称）；按大区分组/展示时 JOIN sal_regions 取 name"
+        alias: ["大区", "区域"]
+        sync: true
+        enum_source: sal_regions.name
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "所在城市"
+        alias: ["城市"]
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "门店类型"
+        alias: ["门店类型", "渠道类型"]
+        sync: true
+      - name: star
+        type: NUMERIC(14,2)
+        role: measure
+        description: "星级评分（1-5）"
+        alias: ["星级", "评分"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "营业状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: sal_customers
+    role: dim
+    description: 客户
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: cust_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "客户编号"
+        alias: ["客户号"]
+      - name: gender
+        type: VARCHAR(12)
+        role: dimension
+        description: "性别"
+        sync: true
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "常驻城市"
+        alias: ["城市", "所在城市"]
+      - name: vip_level
+        type: VARCHAR(12)
+        role: dimension
+        description: "会员等级"
+        alias: ["会员", "VIP等级", "等级"]
+        sync: true
+      - name: birthday
+        type: DATE
+        role: dimension
+        description: "出生日期"
+        alias: ["生日"]
+      - name: registered_at
+        type: TIMESTAMP
+        role: date
+        description: "注册时间"
+        alias: ["注册日期"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: mfg_plants
+    role: dim
+    description: 整车工厂
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "工厂名称"
+        alias: ["工厂", "生产基地", "厂区"]
+        sync: true
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "所在城市"
+      - name: capacity_per_year
+        type: NUMERIC(14,2)
+        role: measure
+        description: "年产能（万辆）"
+        alias: ["产能", "年产能"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: mfg_workshops
+    role: dim
+    description: 车间
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "车间名称"
+        alias: ["车间"]
+        sync: true
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "工厂ID，维表 mfg_plants.id → name（工厂名称）；按工厂分组/展示时 JOIN mfg_plants 取 name ★行级权限列（engineer 角色按 plant_id 隔离）"
+        alias: ["工厂", "厂区"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: mfg_lines
+    role: dim
+    description: 产线
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "产线名称"
+        alias: ["产线", "线体"]
+        sync: true
+      - name: workshop_id
+        type: BIGINT
+        role: foreign_key
+        description: "车间ID，维表 mfg_workshops.id → name（车间名称）；按车间分组时 JOIN 取 name"
+        alias: ["车间"]
+        sync: true
+        enum_source: mfg_workshops.name
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "产线状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: mfg_stations
+    role: dim
+    description: 工位
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "工位名称"
+        alias: ["工位"]
+        sync: true
+      - name: line_id
+        type: BIGINT
+        role: foreign_key
+        description: "产线ID，维表 mfg_lines.id → name（产线名称）；按产线分组时 JOIN 取 name"
+        alias: ["产线", "线体"]
+        sync: true
+        enum_source: mfg_lines.name
+      - name: type
+        type: VARCHAR(12)
+        role: dimension
+        description: "工位类型"
+        alias: ["类型"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: mfg_shifts
+    role: dim
+    description: 班次
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(20)
+        role: dimension
+        description: "班次名称"
+        alias: ["班次"]
+        sync: true
+      - name: start_time
+        type: VARCHAR(10)
+        role: dimension
+        description: "开始时刻"
+      - name: hours
+        type: INTEGER
+        role: dimension
+        description: "工时（小时）"
+  - name: mfg_equipment
+    role: dim
+    description: 生产设备
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(80)
+        role: dimension
+        description: "设备名称"
+        alias: ["设备", "装备"]
+        sync: true
+      - name: workshop_id
+        type: BIGINT
+        role: foreign_key
+        description: "车间ID，维表 mfg_workshops.id → name（车间名称）"
+        alias: ["车间"]
+        sync: true
+        enum_source: mfg_workshops.name
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "设备状态"
+        alias: ["状态"]
+        sync: true
+      - name: purchase_date
+        type: DATE
+        role: dimension
+        description: "购置日期"
+        alias: ["购置日期"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: plm_part_categories
+    role: dim
+    description: 零件分类
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(60)
+        role: dimension
+        description: "分类名称"
+        alias: ["零件分类", "类别", "零件类别"]
+        sync: true
+      - name: domain
+        type: VARCHAR(12)
+        role: dimension
+        description: "所属域"
+        alias: ["域", "领域"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: plm_parts
+    role: dim
+    description: 零件主数据
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: part_no
+        type: VARCHAR(40)
+        role: dimension
+        description: "零件号"
+        alias: ["零件号", "件号"]
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "零件名称"
+        alias: ["零件", "零件名", "部件"]
+        sync: true
+      - name: category_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件分类ID，维表 plm_part_categories.id → name（分类名称）；按零件分类分组时 JOIN 取 name"
+        alias: ["零件分类", "类别"]
+        sync: true
+        enum_source: plm_part_categories.name
+      - name: is_safety
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否安全件"
+        alias: ["安全件"]
+        sync: true
+      - name: lifecycle_status
+        type: VARCHAR(12)
+        role: dimension
+        description: "生命周期状态"
+        alias: ["生命周期", "状态"]
+        sync: true
+      - name: weight_kg
+        type: NUMERIC(14,2)
+        role: measure
+        description: "单件重量（kg）"
+        alias: ["重量"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: plm_materials
+    role: dim
+    description: 原材料
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(80)
+        role: dimension
+        description: "材料名称"
+        alias: ["材料", "原材料"]
+        sync: true
+      - name: category
+        type: VARCHAR(12)
+        role: dimension
+        description: "材料大类"
+        alias: ["大类"]
+        sync: true
+      - name: unit_price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "单价（元/kg）"
+        alias: ["单价", "价格"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: plm_suppliers
+    role: dim
+    description: 供应商
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "供应商名称"
+        alias: ["供应商", "供货商", "厂家", "Tier1"]
+        sync: true
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "所在城市"
+        alias: ["城市"]
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "供应商等级"
+        alias: ["等级", "评级"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "合作状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: plm_drawings
+    role: dim
+    description: 图纸
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: drawing_no
+        type: VARCHAR(40)
+        role: dimension
+        description: "图号"
+        alias: ["图号"]
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "图纸名称"
+        alias: ["图纸名"]
+        sync: true
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: drawing_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "图纸类型"
+        alias: ["类型"]
+        sync: true
+      - name: version
+        type: VARCHAR(20)
+        role: dimension
+        description: "版本"
+        alias: ["版本"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: fin_cost_items
+    role: dim
+    description: 成本科目
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(60)
+        role: dimension
+        description: "科目名称"
+        alias: ["科目", "成本科目"]
+        sync: true
+      - name: category
+        type: VARCHAR(12)
+        role: dimension
+        description: "成本性质"
+        alias: ["性质"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: sal_price_lists
+    role: dim
+    description: 价目表
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: list_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "价目编号"
+        alias: ["价目号"]
+      - name: trim_id
+        type: BIGINT
+        role: foreign_key
+        description: "款型ID，维表 veh_trims.id → name（款型名称）"
+        alias: ["款型"]
+        sync: true
+        enum_source: veh_trims.name
+      - name: list_price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "价目价格（万元）"
+        alias: ["价格", "指导价"]
+      - name: region_scope
+        type: VARCHAR(12)
+        role: dimension
+        description: "适用大区"
+        alias: ["大区", "适用区域"]
+        sync: true
+      - name: effective_date
+        type: DATE
+        role: dimension
+        description: "生效日期"
+        alias: ["生效日期"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "状态"
+        alias: ["状态"]
+        sync: true
+  - name: sal_promotions
+    role: dim
+    description: 促销活动
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "活动名称"
+        alias: ["促销", "活动", "营销活动"]
+        sync: true
+      - name: type
+        type: VARCHAR(12)
+        role: dimension
+        description: "促销类型"
+        alias: ["类型"]
+        sync: true
+      - name: start_date
+        type: DATE
+        role: dimension
+        description: "开始日期"
+        alias: ["开始", "开始日期"]
+      - name: end_date
+        type: DATE
+        role: dimension
+        description: "结束日期"
+        alias: ["结束", "结束日期"]
+      - name: budget
+        type: NUMERIC(14,2)
+        role: measure
+        description: "活动预算（万元）"
+        alias: ["预算"]
+  - name: svc_service_centers
+    role: dim
+    description: 服务中心
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "服务中心名称"
+        alias: ["服务中心", "服务网点", "网点", "售后门店"]
+        sync: true
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "所在城市"
+        alias: ["城市"]
+      - name: region_id
+        type: BIGINT
+        role: foreign_key
+        description: "大区ID，维表 sal_regions.id → name（大区名称）；按大区分组时 JOIN sal_regions 取 name ★行级权限列（sales 角色按 region_id 隔离）"
+        alias: ["大区", "区域"]
+        sync: true
+        enum_source: sal_regions.name
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "网点类型"
+        alias: ["类型"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: svc_mechanics
+    role: dim
+    description: 技师
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "技师姓名"
+        alias: ["技师", "维修师傅"]
+        sync: true
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "服务中心ID，维表 svc_service_centers.id → name（服务中心名称）；按网点分组时 JOIN 取 name"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: skill_level
+        type: VARCHAR(12)
+        role: dimension
+        description: "技能等级"
+        alias: ["等级", "技能", "职级"]
+        sync: true
+      - name: specialty
+        type: VARCHAR(12)
+        role: dimension
+        description: "专业方向"
+        alias: ["专业", "专长"]
+        sync: true
+      - name: hired_at
+        type: DATE
+        role: dimension
+        description: "入职日期"
+        alias: ["入职日期"]
+  - name: svc_service_advisors
+    role: dim
+    description: 服务顾问
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "顾问姓名"
+        alias: ["服务顾问", "顾问"]
+        sync: true
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "服务中心ID，维表 svc_service_centers.id → name（服务中心名称）"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "级别"
+        alias: ["级别"]
+        sync: true
+  - name: svc_labor_items
+    role: dim
+    description: 工时项目
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: item_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "项目编码"
+        alias: ["工时代码"]
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "工时项目名称"
+        alias: ["工时项目", "保养项目", "服务项目"]
+        sync: true
+      - name: standard_hours
+        type: NUMERIC(14,2)
+        role: measure
+        description: "标准工时（小时）"
+        alias: ["标准工时", "工时"]
+      - name: price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "工时费（元）"
+        alias: ["工时费", "价格"]
+      - name: category
+        type: VARCHAR(12)
+        role: dimension
+        description: "项目类别"
+        alias: ["类别"]
+        sync: true
+  - name: svc_maintenance_packages
+    role: dim
+    description: 保养套餐
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(80)
+        role: dimension
+        description: "套餐名称"
+        alias: ["套餐", "保养套餐"]
+        sync: true
+      - name: price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "套餐价格（元）"
+        alias: ["价格"]
+      - name: times
+        type: NUMERIC(14,2)
+        role: measure
+        description: "包含次数"
+        alias: ["次数"]
+  - name: svc_warranty_policies
+    role: dim
+    description: 质保政策
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "政策名称"
+        alias: ["质保政策", "政策", "三包政策"]
+        sync: true
+      - name: scope
+        type: VARCHAR(12)
+        role: dimension
+        description: "质保范围"
+        alias: ["范围"]
+        sync: true
+      - name: months
+        type: NUMERIC(14,2)
+        role: measure
+        description: "质保月数"
+        alias: ["月数", "质保期"]
+      - name: km_limit
+        type: NUMERIC(14,2)
+        role: measure
+        description: "里程上限（公里）"
+        alias: ["里程上限", "里程限制"]
+  - name: qms_fault_codes
+    role: dim
+    description: 故障码字典（DTC）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: dtc_code
+        type: VARCHAR(10)
+        role: dimension
+        description: "故障码"
+        alias: ["故障码", "DTC", "诊断码"]
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "故障名称"
+        alias: ["故障名称", "故障名"]
+        sync: true
+      - name: system
+        type: VARCHAR(12)
+        role: dimension
+        description: "所属系统"
+        alias: ["系统", "所属域"]
+        sync: true
+      - name: severity
+        type: VARCHAR(12)
+        role: dimension
+        description: "严重程度"
+        alias: ["严重级别", "级别"]
+        sync: true
+      - name: is_safety_related
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否安全相关"
+        alias: ["安全相关"]
+        sync: true
+  - name: ota_ecus
+    role: dim
+    description: ECU 电子控制单元清单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "ECU 名称"
+        alias: ["ECU", "控制器", "电控单元"]
+        sync: true
+      - name: domain
+        type: VARCHAR(12)
+        role: dimension
+        description: "所属域"
+        alias: ["域"]
+        sync: true
+      - name: supplier_count
+        type: NUMERIC(14,2)
+        role: measure
+        description: "供应商数量"
+        alias: ["供应商数"]
+  - name: ota_packages
+    role: dim
+    description: OTA 软件包
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: version
+        type: VARCHAR(30)
+        role: dimension
+        description: "软件版本"
+        alias: ["版本", "软件版本"]
+      - name: ecu_id
+        type: BIGINT
+        role: foreign_key
+        description: "ECU ID，维表 ota_ecus.id → name（ECU 名称）；按 ECU 分组时 JOIN 取 name"
+        alias: ["ECU", "控制器"]
+        sync: true
+        enum_source: ota_ecus.name
+      - name: release_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "发布类型"
+        alias: ["类型"]
+        sync: true
+      - name: size_mb
+        type: NUMERIC(14,2)
+        role: measure
+        description: "包大小（MB）"
+        alias: ["大小"]
+      - name: released_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发布时间"
+        alias: ["发布日期", "发布时间"]
+  - name: ad_scenarios
+    role: dim
+    description: 智驾测试场景库
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: code
+        type: VARCHAR(30)
+        role: dimension
+        description: "场景编号"
+        alias: ["场景编号"]
+      - name: name
+        type: VARCHAR(160)
+        role: dimension
+        description: "场景名称"
+        alias: ["场景", "测试场景"]
+        sync: true
+      - name: road_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "道路类型"
+        alias: ["道路", "路况"]
+        sync: true
+      - name: weather
+        type: VARCHAR(12)
+        role: dimension
+        description: "天气条件"
+        alias: ["天气"]
+        sync: true
+      - name: risk_level
+        type: VARCHAR(12)
+        role: dimension
+        description: "风险等级"
+        alias: ["风险", "等级"]
+        sync: true
+  - name: ad_test_vehicles
+    role: dim
+    description: 智驾测试车队
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: plate_no
+        type: VARCHAR(15)
+        role: dimension
+        description: "测试车牌号"
+        alias: ["车牌", "测试车牌"]
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "车型ID，维表 veh_models.id → name（车型名称）"
+        alias: ["车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "智驾等级"
+        alias: ["智驾等级", "等级"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "车辆状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: alm_engineers
+    role: dim
+    description: 研发工程师
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(50)
+        role: dimension
+        description: "工程师姓名"
+        alias: ["工程师", "负责人", "责任人"]
+        sync: true
+      - name: domain
+        type: VARCHAR(12)
+        role: dimension
+        description: "所属域"
+        alias: ["域", "领域"]
+        sync: true
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "职级"
+        alias: ["职级", "级别"]
+        sync: true
+      - name: joined_at
+        type: DATE
+        role: dimension
+        description: "入职日期"
+        alias: ["入职日期"]
+  - name: alm_projects
+    role: dim
+    description: 研发项目
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: project_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "项目编号"
+        alias: ["项目号"]
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "项目名称"
+        alias: ["项目"]
+        sync: true
+      - name: stage
+        type: VARCHAR(12)
+        role: dimension
+        description: "项目阶段"
+        alias: ["阶段"]
+        sync: true
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "落地工厂ID，维表 mfg_plants.id → name（工厂名称）★行级权限列（engineer 角色按 plant_id 隔离）"
+        alias: ["工厂"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: started_at
+        type: TIMESTAMP
+        role: date
+        description: "立项时间"
+        alias: ["立项日期"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: alm_requirements
+    role: fact
+    description: 产品需求
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: req_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "需求编号"
+        alias: ["需求号", "需求单号"]
+      - name: title
+        type: VARCHAR(300)
+        role: dimension
+        description: "需求标题"
+        alias: ["标题", "需求名"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）；按项目分组时 JOIN 取 name"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: priority
+        type: VARCHAR(12)
+        role: dimension
+        description: "优先级"
+        alias: ["优先级", "重要程度"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "需求状态"
+        alias: ["状态"]
+        sync: true
+      - name: source
+        type: VARCHAR(60)
+        role: dimension
+        description: "需求来源"
+        alias: ["来源"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: alm_requirement_links
+    role: fact
+    description: 需求追溯关系
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: requirement_id
+        type: BIGINT
+        role: foreign_key
+        description: "需求ID，维表 alm_requirements.id → req_no（需求编号）"
+        alias: ["需求"]
+        enum_source: alm_requirements.name
+      - name: test_case_id
+        type: BIGINT
+        role: foreign_key
+        description: "测试用例ID，维表 alm_test_cases.id → case_no（用例编号）"
+        alias: ["测试用例", "用例"]
+        enum_source: alm_test_cases.name
+      - name: link_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "追溯类型"
+        alias: ["类型"]
+        sync: true
+  - name: alm_change_requests
+    role: fact
+    description: 变更请求（CR）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: cr_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "变更编号"
+        alias: ["CR号", "变更号"]
+      - name: title
+        type: VARCHAR(300)
+        role: dimension
+        description: "变更标题"
+        alias: ["标题", "变更名"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）；按项目分组时 JOIN 取 name"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "变更状态"
+        alias: ["状态"]
+        sync: true
+      - name: change_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "变更类型"
+        alias: ["类型"]
+        sync: true
+      - name: impact_level
+        type: VARCHAR(12)
+        role: dimension
+        description: "影响等级"
+        alias: ["影响", "等级"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: alm_baselines
+    role: dim
+    description: 基线
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: baseline_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "基线编号"
+        alias: ["基线号"]
+      - name: name
+        type: VARCHAR(150)
+        role: dimension
+        description: "基线名称"
+        alias: ["基线名"]
+        sync: true
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: is_frozen
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否冻结"
+        alias: ["冻结", "冻结状态"]
+        sync: true
+      - name: release_date
+        type: DATE
+        role: dimension
+        description: "发布日期"
+        alias: ["发布日期"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: alm_issues
+    role: fact
+    description: 缺陷问题单（研发）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: issue_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "问题单编号"
+        alias: ["问题单号", "缺陷号", "单号"]
+      - name: title
+        type: VARCHAR(400)
+        role: dimension
+        description: "问题标题"
+        alias: ["标题", "问题名"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）；按项目分组时 JOIN 取 name"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: source
+        type: VARCHAR(12)
+        role: dimension
+        description: "问题来源"
+        alias: ["来源"]
+        sync: true
+      - name: severity
+        type: VARCHAR(12)
+        role: dimension
+        description: "严重程度"
+        alias: ["严重级别", "级别"]
+        sync: true
+      - name: status
+        type: VARCHAR(20)
+        role: dimension
+        description: "问题状态，枚举值固定为英文：open(未处理)/analyzing(分析中)/fixing(修复中)/closed(已关闭)/verified(已验证)，过滤时必须用英文值如 status='closed'"
+        alias: ["状态", "关闭", "未关闭", "已关闭"]
+        sync: true
+      - name: owner_engineer_id
+        type: BIGINT
+        role: foreign_key
+        description: "责任工程师ID，维表 alm_engineers.id → name（工程师姓名）；按工程师分组时 JOIN 取 name"
+        alias: ["责任人", "工程师", "责任工程师"]
+        sync: true
+        enum_source: alm_engineers.name
+      - name: root_cause_id
+        type: BIGINT
+        role: foreign_key
+        description: "根因ID，维表 alm_defect_root_causes.id → name（根因分类），可为空"
+        alias: ["根因"]
+        sync: true
+        enum_source: alm_defect_root_causes.name
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "车型ID，维表 veh_models.id → name（车型名称）；按车型分组时 JOIN 取 name"
+        alias: ["车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: alm_defect_root_causes
+    role: dim
+    description: 缺陷根因分类
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(120)
+        role: dimension
+        description: "根因描述"
+        alias: ["根因", "根因分类"]
+        sync: true
+      - name: category
+        type: VARCHAR(12)
+        role: dimension
+        description: "根因大类"
+        alias: ["大类"]
+        sync: true
+      - name: corrective_action
+        type: VARCHAR(300)
+        role: dimension
+        description: "纠正措施描述"
+        alias: ["纠正措施", "措施"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "措施状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+  - name: alm_test_cases
+    role: fact
+    description: 测试用例
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: case_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "用例编号"
+        alias: ["用例号"]
+      - name: title
+        type: VARCHAR(300)
+        role: dimension
+        description: "用例标题"
+        alias: ["标题", "用例名"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）；按项目分组时 JOIN 取 name"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: case_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "用例类型"
+        alias: ["类型"]
+        sync: true
+      - name: priority
+        type: VARCHAR(12)
+        role: dimension
+        description: "优先级"
+        alias: ["优先级"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "用例状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: alm_test_plans
+    role: dim
+    description: 测试计划
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: plan_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "计划编号"
+        alias: ["计划号"]
+      - name: name
+        type: VARCHAR(150)
+        role: dimension
+        description: "计划名称"
+        alias: ["计划名"]
+        sync: true
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: phase
+        type: VARCHAR(12)
+        role: dimension
+        description: "测试阶段"
+        alias: ["阶段"]
+        sync: true
+      - name: start_date
+        type: DATE
+        role: dimension
+        description: "开始日期"
+        alias: ["开始日期"]
+      - name: end_date
+        type: DATE
+        role: dimension
+        description: "结束日期"
+        alias: ["结束日期"]
+  - name: alm_test_executions
+    role: fact
+    description: 测试执行记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: test_case_id
+        type: BIGINT
+        role: foreign_key
+        description: "测试用例ID，维表 alm_test_cases.id → case_no（用例编号）；按用例分组时 JOIN 取 case_no"
+        alias: ["测试用例", "用例"]
+        enum_source: alm_test_cases.name
+      - name: test_plan_id
+        type: BIGINT
+        role: foreign_key
+        description: "测试计划ID，维表 alm_test_plans.id → name（计划名称）；按计划分组时 JOIN 取 name"
+        alias: ["测试计划", "计划"]
+        sync: true
+        enum_source: alm_test_plans.name
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "执行结果"
+        alias: ["结果", "通过/失败"]
+        sync: true
+      - name: duration_s
+        type: INTEGER
+        role: measure
+        description: "执行耗时（秒）"
+        alias: ["耗时", "执行时长"]
+      - name: engineer_id
+        type: BIGINT
+        role: foreign_key
+        description: "执行工程师ID，维表 alm_engineers.id → name（工程师姓名）"
+        alias: ["执行人", "工程师"]
+        sync: true
+        enum_source: alm_engineers.name
+      - name: executed_at
+        type: TIMESTAMP
+        role: dimension
+        description: "执行时间"
+        alias: ["执行日期", "时间"]
+      - name: environment
+        type: VARCHAR(60)
+        role: dimension
+        description: "测试环境"
+        alias: ["环境"]
+  - name: alm_release_versions
+    role: dim
+    description: 版本发布记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: version_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "版本号"
+        alias: ["版本号"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: release_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "发布类型"
+        alias: ["类型"]
+        sync: true
+      - name: release_date
+        type: DATE
+        role: dimension
+        description: "发布日期"
+        alias: ["发布日期"]
+      - name: is_golden
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否金版本（基线版本）"
+        alias: ["金版本"]
+        sync: true
+  - name: alm_sprints
+    role: dim
+    description: 迭代
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: sprint_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "迭代编号"
+        alias: ["迭代号", "冲刺"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: start_date
+        type: DATE
+        role: dimension
+        description: "开始日期"
+        alias: ["开始日期"]
+      - name: end_date
+        type: DATE
+        role: dimension
+        description: "结束日期"
+        alias: ["结束日期"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "迭代状态"
+        alias: ["状态"]
+        sync: true
+  - name: alm_ci_records
+    role: fact
+    description: 持续集成构建记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: build_no
+        type: VARCHAR(40)
+        role: dimension
+        description: "构建编号"
+        alias: ["构建号"]
+      - name: project_id
+        type: BIGINT
+        role: foreign_key
+        description: "项目ID，维表 alm_projects.id → name（项目名称）；按项目分组时 JOIN 取 name"
+        alias: ["项目"]
+        sync: true
+        enum_source: alm_projects.name
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "构建结果"
+        alias: ["结果"]
+        sync: true
+      - name: duration_min
+        type: NUMERIC(14,2)
+        role: measure
+        description: "构建时长（分钟）"
+        alias: ["时长", "构建耗时"]
+      - name: branch
+        type: VARCHAR(14)
+        role: dimension
+        description: "代码分支"
+        alias: ["分支"]
+        sync: true
+      - name: triggered_at
+        type: TIMESTAMP
+        role: date
+        description: "触发时间"
+        alias: ["触发时间", "时间"]
+  - name: plm_bom_headers
+    role: dim
+    description: BOM 清单头
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: bom_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "BOM 编号"
+        alias: ["BOM号"]
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "车型ID，维表 veh_models.id → name（车型名称）；按车型分组时 JOIN 取 name"
+        alias: ["车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: bom_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "BOM 类型"
+        alias: ["类型"]
+        sync: true
+      - name: version
+        type: VARCHAR(20)
+        role: dimension
+        description: "版本"
+        alias: ["版本"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: plm_bom_items
+    role: fact
+    description: BOM 明细行
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: bom_id
+        type: BIGINT
+        role: foreign_key
+        description: "BOM 头ID，维表 plm_bom_headers.id → bom_no（BOM 编号）"
+        alias: ["BOM"]
+        enum_source: plm_bom_headers.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）；按零件分组时 JOIN 取 name"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: quantity
+        type: INTEGER
+        role: measure
+        description: "单车用量"
+        alias: ["用量", "数量"]
+      - name: unit
+        type: VARCHAR(10)
+        role: dimension
+        description: "计量单位"
+        alias: ["单位"]
+  - name: plm_engineering_changes
+    role: fact
+    description: 工程变更（ECN）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: ecn_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "ECN 编号"
+        alias: ["ECN号", "工程变更号"]
+      - name: title
+        type: VARCHAR(300)
+        role: dimension
+        description: "变更标题"
+        alias: ["标题"]
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "涉及零件ID，维表 plm_parts.id → name（零件名称）；按零件分组时 JOIN 取 name"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: reason
+        type: VARCHAR(12)
+        role: dimension
+        description: "变更原因"
+        alias: ["原因"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: plm_part_costs
+    role: fact
+    description: 零件成本记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）；按零件分组时 JOIN 取 name"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "单件成本（元）"
+        alias: ["成本", "单价", "零件成本"]
+      - name: currency
+        type: VARCHAR(10)
+        role: dimension
+        description: "币种"
+      - name: effective_date
+        type: DATE
+        role: dimension
+        description: "生效日期"
+        alias: ["生效日期"]
+  - name: plm_supplier_parts
+    role: fact
+    description: 供应商供货关系
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: supplier_id
+        type: BIGINT
+        role: foreign_key
+        description: "供应商ID，维表 plm_suppliers.id → name（供应商名称）；按供应商分组时 JOIN 取 name"
+        alias: ["供应商", "厂家"]
+        sync: true
+        enum_source: plm_suppliers.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）；按零件分组时 JOIN 取 name"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "供货价（元）"
+        alias: ["价格", "供货价"]
+      - name: is_primary
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否主供"
+        alias: ["主供"]
+        sync: true
+      - name: lead_time_days
+        type: INTEGER
+        role: measure
+        description: "供货周期（天）"
+        alias: ["周期", "供货周期", "交期"]
+  - name: plm_supplier_ratings
+    role: fact
+    description: 供应商季度评级
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: supplier_id
+        type: BIGINT
+        role: foreign_key
+        description: "供应商ID，维表 plm_suppliers.id → name（供应商名称）；按供应商分组时 JOIN 取 name"
+        alias: ["供应商", "厂家"]
+        sync: true
+        enum_source: plm_suppliers.name
+      - name: period
+        type: VARCHAR(10)
+        role: dimension
+        description: "评级期间（季度）"
+        alias: ["期间", "季度"]
+      - name: quality_score
+        type: NUMERIC(14,2)
+        role: measure
+        description: "质量得分"
+        alias: ["质量分"]
+      - name: delivery_score
+        type: NUMERIC(14,2)
+        role: measure
+        description: "交付得分"
+        alias: ["交付分"]
+      - name: total_score
+        type: NUMERIC(14,2)
+        role: measure
+        description: "综合得分"
+        alias: ["综合得分", "总分"]
+      - name: grade
+        type: VARCHAR(12)
+        role: dimension
+        description: "评级"
+        alias: ["等级", "评级"]
+        sync: true
+  - name: pur_purchase_orders
+    role: fact
+    description: 采购订单头
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: po_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "采购订单号"
+        alias: ["PO号", "采购单号"]
+      - name: supplier_id
+        type: BIGINT
+        role: foreign_key
+        description: "供应商ID，维表 plm_suppliers.id → name（供应商名称）；按供应商分组时 JOIN 取 name"
+        alias: ["供应商", "厂家"]
+        sync: true
+        enum_source: plm_suppliers.name
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "订单状态"
+        alias: ["状态"]
+        sync: true
+      - name: buyer
+        type: VARCHAR(50)
+        role: dimension
+        description: "采购员"
+        alias: ["采购员", "买手"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: pur_po_lines
+    role: fact
+    description: 采购订单行
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: po_id
+        type: BIGINT
+        role: foreign_key
+        description: "采购订单头ID，维表 pur_purchase_orders.id → po_no（采购订单号）"
+        alias: ["采购订单", "PO"]
+        enum_source: pur_purchase_orders.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）；按零件分组时 JOIN 取 name"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: quantity
+        type: INTEGER
+        role: measure
+        description: "采购数量"
+        alias: ["数量"]
+      - name: unit_price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "含税单价（元）"
+        alias: ["单价", "价格"]
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "行金额（元）= 数量 × 含税单价"
+        alias: ["金额", "总价"]
+  - name: pur_inbound_receipts
+    role: fact
+    description: 采购入库单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: receipt_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "入库单号"
+        alias: ["入库单号", "收货单号"]
+      - name: po_id
+        type: BIGINT
+        role: foreign_key
+        description: "采购订单头ID，维表 pur_purchase_orders.id → po_no（采购订单号）"
+        alias: ["采购订单", "PO"]
+        enum_source: pur_purchase_orders.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: quantity
+        type: INTEGER
+        role: measure
+        description: "到货数量"
+        alias: ["数量", "到货数量"]
+      - name: qualified_qty
+        type: INTEGER
+        role: measure
+        description: "合格数量"
+        alias: ["合格数量"]
+      - name: inspect_result
+        type: VARCHAR(12)
+        role: dimension
+        description: "检验结论"
+        alias: ["检验结果", "结论"]
+        sync: true
+      - name: arrival_date
+        type: DATE
+        role: dimension
+        description: "到货日期"
+        alias: ["到货日期", "时间"]
+  - name: veh_vehicles
+    role: fact
+    description: 整车档案（一辆车一行，VIN 唯一）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: trim_id
+        type: BIGINT
+        role: foreign_key
+        description: "款型ID，维表 veh_trims.id → name（款型名称）；按款型分组时 JOIN 取 name"
+        alias: ["款型", "配置"]
+        sync: true
+        enum_source: veh_trims.name
+      - name: color_id
+        type: BIGINT
+        role: foreign_key
+        description: "颜色ID，维表 veh_colors.id → name（颜色名称）；按颜色分组时 JOIN 取 name"
+        alias: ["颜色", "车色"]
+        sync: true
+        enum_source: veh_colors.name
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "下线工厂ID，维表 mfg_plants.id → name（工厂名称）；按工厂分组时 JOIN 取 name ★行级权限列（engineer 角色按 plant_id 隔离）"
+        alias: ["工厂", "生产基地", "下线工厂"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: build_date
+        type: DATE
+        role: dimension
+        description: "下线日期"
+        alias: ["下线日期", "生产日期", "出厂日期"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "车辆状态"
+        alias: ["状态", "车辆状态"]
+        sync: true
+      - name: msrp
+        type: NUMERIC(14,2)
+        role: measure
+        description: "该配置售价（万元）"
+        alias: ["售价", "指导价", "车价"]
+  - name: mfg_vehicle_builds
+    role: fact
+    description: 整车下线记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: build_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "下线编号"
+        alias: ["下线号", "车身号"]
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "整车ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["整车", "车辆"]
+        enum_source: veh_vehicles.name
+      - name: line_id
+        type: BIGINT
+        role: foreign_key
+        description: "产线ID，维表 mfg_lines.id → name（产线名称）；按产线分组时 JOIN 取 name"
+        alias: ["产线", "线体"]
+        sync: true
+        enum_source: mfg_lines.name
+      - name: shift_id
+        type: BIGINT
+        role: foreign_key
+        description: "班次ID，维表 mfg_shifts.id → name（班次名称）；按班次分组时 JOIN 取 name"
+        alias: ["班次"]
+        sync: true
+        enum_source: mfg_shifts.name
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "下线结果"
+        alias: ["结果"]
+        sync: true
+      - name: build_date
+        type: DATE
+        role: dimension
+        description: "下线日期"
+        alias: ["下线日期", "日期"]
+  - name: mfg_work_orders
+    role: fact
+    description: 生产工单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: wo_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "生产工单号"
+        alias: ["工单号", "生产单号"]
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "工厂ID，维表 mfg_plants.id → name（工厂名称）；按工厂分组时 JOIN 取 name ★行级权限列"
+        alias: ["工厂"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: line_id
+        type: BIGINT
+        role: foreign_key
+        description: "产线ID，维表 mfg_lines.id → name（产线名称）"
+        alias: ["产线"]
+        sync: true
+        enum_source: mfg_lines.name
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "车型ID，维表 veh_models.id → name（车型名称）；按车型分组时 JOIN 取 name"
+        alias: ["车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: plan_qty
+        type: INTEGER
+        role: measure
+        description: "计划数量"
+        alias: ["计划量"]
+      - name: actual_qty
+        type: INTEGER
+        role: measure
+        description: "实际数量"
+        alias: ["实际量", "产量"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "工单状态"
+        alias: ["状态"]
+        sync: true
+      - name: start_date
+        type: DATE
+        role: dimension
+        description: "开始日期"
+        alias: ["开始日期"]
+      - name: end_date
+        type: DATE
+        role: dimension
+        description: "完工日期"
+        alias: ["完工日期", "结束日期"]
+  - name: mfg_production_records
+    role: fact
+    description: 生产产量记录（产线×班次×日）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: record_date
+        type: DATE
+        role: dimension
+        description: "生产日期"
+        alias: ["生产日期", "日期"]
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "工厂ID，维表 mfg_plants.id → name（工厂名称）；按工厂分组时 JOIN 取 name ★行级权限列"
+        alias: ["工厂"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: line_id
+        type: BIGINT
+        role: foreign_key
+        description: "产线ID，维表 mfg_lines.id → name（产线名称）"
+        alias: ["产线"]
+        sync: true
+        enum_source: mfg_lines.name
+      - name: shift_id
+        type: BIGINT
+        role: foreign_key
+        description: "班次ID，维表 mfg_shifts.id → name（班次名称）"
+        alias: ["班次"]
+        sync: true
+        enum_source: mfg_shifts.name
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "车型ID，维表 veh_models.id → name（车型名称）"
+        alias: ["车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: plan_qty
+        type: INTEGER
+        role: measure
+        description: "计划产量"
+        alias: ["计划产量"]
+      - name: actual_qty
+        type: INTEGER
+        role: measure
+        description: "实际产量"
+        alias: ["实际产量", "产量"]
+      - name: oee
+        type: NUMERIC(6,4)
+        role: measure
+        description: "设备综合效率 OEE（0-1）"
+        alias: ["OEE", "综合效率"]
+  - name: mfg_station_defects
+    role: fact
+    description: 工位缺陷记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: build_id
+        type: BIGINT
+        role: foreign_key
+        description: "下线记录ID，维表 mfg_vehicle_builds.id → build_no（下线编号）"
+        alias: ["下线记录"]
+        enum_source: mfg_vehicle_builds.name
+      - name: station_id
+        type: BIGINT
+        role: foreign_key
+        description: "工位ID，维表 mfg_stations.id → name（工位名称）；按工位分组时 JOIN 取 name"
+        alias: ["工位"]
+        sync: true
+        enum_source: mfg_stations.name
+      - name: defect_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "缺陷类型"
+        alias: ["类型", "缺陷类别"]
+        sync: true
+      - name: severity
+        type: VARCHAR(12)
+        role: dimension
+        description: "严重程度"
+        alias: ["严重级别", "级别"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "处理状态"
+        alias: ["状态"]
+        sync: true
+      - name: found_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发现时间"
+        alias: ["发现时间", "时间"]
+  - name: mfg_quality_inspections
+    role: fact
+    description: 整车质检记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "整车ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["整车", "车辆"]
+        enum_source: veh_vehicles.name
+      - name: station_id
+        type: BIGINT
+        role: foreign_key
+        description: "工位ID，维表 mfg_stations.id → name（工位名称）"
+        alias: ["工位"]
+        sync: true
+        enum_source: mfg_stations.name
+      - name: inspection_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "检验类型"
+        alias: ["类型", "检验类别"]
+        sync: true
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "检验结论"
+        alias: ["结论", "结果"]
+        sync: true
+      - name: inspector
+        type: VARCHAR(50)
+        role: dimension
+        description: "检验员"
+        alias: ["检验员"]
+      - name: inspected_at
+        type: TIMESTAMP
+        role: dimension
+        description: "检验时间"
+        alias: ["检验时间", "时间"]
+  - name: mfg_rework_records
+    role: fact
+    description: 返修记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: rework_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "返修单号"
+        alias: ["返修号"]
+      - name: inspection_id
+        type: BIGINT
+        role: foreign_key
+        description: "质检记录ID，维表 mfg_quality_inspections.id"
+        alias: ["质检记录"]
+        enum_source: mfg_quality_inspections.name
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "整车ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["整车", "车辆"]
+        enum_source: veh_vehicles.name
+      - name: defect_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "返修缺陷类型"
+        alias: ["类型"]
+        sync: true
+      - name: rework_hours
+        type: NUMERIC(14,2)
+        role: measure
+        description: "返修工时（小时）"
+        alias: ["工时", "返修工时"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "状态"
+        alias: ["状态"]
+        sync: true
+      - name: finished_at
+        type: TIMESTAMP
+        role: dimension
+        description: "完工时间"
+        alias: ["完工时间"]
+  - name: mfg_equipment_faults
+    role: fact
+    description: 设备故障记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: equipment_id
+        type: BIGINT
+        role: foreign_key
+        description: "设备ID，维表 mfg_equipment.id → name（设备名称）；按设备分组时 JOIN 取 name"
+        alias: ["设备"]
+        sync: true
+        enum_source: mfg_equipment.name
+      - name: fault_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "故障类型"
+        alias: ["类型"]
+        sync: true
+      - name: downtime_min
+        type: INTEGER
+        role: measure
+        description: "停机时长（分钟）"
+        alias: ["停机时长", "停机"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+      - name: repaired_at
+        type: TIMESTAMP
+        role: dimension
+        description: "修复时间"
+        alias: ["修复时间"]
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "故障等级"
+        alias: ["等级"]
+        sync: true
+  - name: mfg_material_consumptions
+    role: fact
+    description: 物料消耗记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: work_order_id
+        type: BIGINT
+        role: foreign_key
+        description: "生产工单ID，维表 mfg_work_orders.id → wo_no（生产工单号）"
+        alias: ["生产工单", "工单"]
+        enum_source: mfg_work_orders.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）；按零件分组时 JOIN 取 name"
+        alias: ["零件", "物料"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: quantity
+        type: INTEGER
+        role: measure
+        description: "消耗数量"
+        alias: ["数量", "消耗量"]
+      - name: scrap_qty
+        type: INTEGER
+        role: measure
+        description: "报废数量"
+        alias: ["报废量"]
+      - name: consumed_at
+        type: TIMESTAMP
+        role: dimension
+        description: "消耗时间"
+        alias: ["时间"]
+  - name: mfg_andon_events
+    role: fact
+    description: 安灯事件（产线异常呼叫）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: station_id
+        type: BIGINT
+        role: foreign_key
+        description: "工位ID，维表 mfg_stations.id → name（工位名称）；按工位分组时 JOIN 取 name"
+        alias: ["工位"]
+        sync: true
+        enum_source: mfg_stations.name
+      - name: line_id
+        type: BIGINT
+        role: foreign_key
+        description: "产线ID，维表 mfg_lines.id → name（产线名称）"
+        alias: ["产线"]
+        sync: true
+        enum_source: mfg_lines.name
+      - name: type
+        type: VARCHAR(12)
+        role: dimension
+        description: "安灯类型"
+        alias: ["类型"]
+        sync: true
+      - name: duration_min
+        type: INTEGER
+        role: measure
+        description: "持续时长（分钟）"
+        alias: ["时长"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: mfg_energy_usages
+    role: fact
+    description: 工厂能耗记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "工厂ID，维表 mfg_plants.id → name（工厂名称）；按工厂分组时 JOIN 取 name ★行级权限列"
+        alias: ["工厂"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: usage_date
+        type: DATE
+        role: dimension
+        description: "能耗日期"
+        alias: ["日期"]
+      - name: energy_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "能源类型"
+        alias: ["能源", "类型"]
+        sync: true
+      - name: usage
+        type: NUMERIC(14,2)
+        role: measure
+        description: "用量"
+        alias: ["用量", "消耗"]
+      - name: cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "费用（元）"
+        alias: ["费用", "成本"]
+  - name: qms_audits
+    role: fact
+    description: 体系/过程审核
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: audit_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "审核编号"
+        alias: ["审核号"]
+      - name: audit_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "审核类型"
+        alias: ["类型"]
+        sync: true
+      - name: plant_id
+        type: BIGINT
+        role: foreign_key
+        description: "工厂ID，维表 mfg_plants.id → name（工厂名称）；按工厂分组时 JOIN 取 name ★行级权限列"
+        alias: ["工厂"]
+        sync: true
+        enum_source: mfg_plants.name
+      - name: audit_date
+        type: DATE
+        role: dimension
+        description: "审核日期"
+        alias: ["审核日期", "日期"]
+      - name: score
+        type: NUMERIC(14,2)
+        role: measure
+        description: "审核得分"
+        alias: ["得分", "分数"]
+      - name: conclusion
+        type: VARCHAR(12)
+        role: dimension
+        description: "审核结论"
+        alias: ["结论"]
+        sync: true
+  - name: qms_audit_findings
+    role: fact
+    description: 审核发现项
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: audit_id
+        type: BIGINT
+        role: foreign_key
+        description: "审核ID，维表 qms_audits.id → audit_no（审核编号）"
+        alias: ["审核"]
+        enum_source: qms_audits.name
+      - name: severity
+        type: VARCHAR(12)
+        role: dimension
+        description: "不符合严重度"
+        alias: ["严重度", "级别"]
+        sync: true
+      - name: description
+        type: VARCHAR(400)
+        role: dimension
+        description: "发现描述"
+        alias: ["描述", "问题描述"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "整改状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: qms_ppm_records
+    role: fact
+    description: 供应商 PPM 记录（百万分之不良率）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: supplier_id
+        type: BIGINT
+        role: foreign_key
+        description: "供应商ID，维表 plm_suppliers.id → name（供应商名称）；按供应商分组时 JOIN 取 name"
+        alias: ["供应商", "厂家"]
+        sync: true
+        enum_source: plm_suppliers.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: stat_month
+        type: DATE
+        role: dimension
+        description: "统计月份"
+        alias: ["月份", "统计月"]
+      - name: ppm
+        type: INTEGER
+        role: measure
+        description: "PPM 值（不良率，百万分之一）"
+        alias: ["PPM", "不良率"]
+      - name: lot_count
+        type: INTEGER
+        role: measure
+        description: "检验批次量"
+        alias: ["批次量"]
+      - name: defect_count
+        type: INTEGER
+        role: measure
+        description: "不良品数量"
+        alias: ["不良数量"]
+  - name: qms_customer_complaints
+    role: fact
+    description: 客户投诉
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: complaint_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "投诉编号"
+        alias: ["投诉号"]
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "涉诉整车ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "涉诉经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组时 JOIN 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: category
+        type: VARCHAR(12)
+        role: dimension
+        description: "投诉类别"
+        alias: ["类别", "类型"]
+        sync: true
+      - name: severity
+        type: VARCHAR(12)
+        role: dimension
+        description: "严重程度"
+        alias: ["严重级别", "级别"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "投诉状态"
+        alias: ["状态"]
+        sync: true
+      - name: description
+        type: VARCHAR(500)
+        role: dimension
+        description: "投诉描述"
+        alias: ["描述", "内容"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: qms_8d_reports
+    role: fact
+    description: 8D 报告
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: report_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "8D 报告编号"
+        alias: ["8D号"]
+      - name: complaint_id
+        type: BIGINT
+        role: foreign_key
+        description: "关联投诉ID，维表 qms_customer_complaints.id → complaint_no（投诉编号），可为空"
+        alias: ["投诉"]
+        enum_source: qms_customer_complaints.name
+      - name: problem
+        type: VARCHAR(400)
+        role: dimension
+        description: "问题描述"
+        alias: ["问题"]
+      - name: status
+        type: VARCHAR(20)
+        role: dimension
+        description: "8D 进度"
+        alias: ["状态", "进度"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: qms_market_faults
+    role: fact
+    description: 市场故障记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "故障整车ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: fault_code_id
+        type: BIGINT
+        role: foreign_key
+        description: "故障码ID，维表 qms_fault_codes.id → dtc_code（故障码）；按故障码/系统分组时 JOIN 取 dtc_code 或 name"
+        alias: ["故障码", "DTC"]
+        sync: true
+        enum_source: qms_fault_codes.name
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "维修服务中心ID，维表 svc_service_centers.id → name（服务中心名称）；按网点分组时 JOIN 取 name"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: mileage
+        type: INTEGER
+        role: measure
+        description: "故障时里程（公里）"
+        alias: ["里程", "行驶里程"]
+      - name: is_repeated
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否重复故障"
+        alias: ["重复故障"]
+        sync: true
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "故障发生时间"
+        alias: ["发生时间", "时间"]
+  - name: qms_cpk_records
+    role: fact
+    description: 过程能力 CPK 记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: station_id
+        type: BIGINT
+        role: foreign_key
+        description: "工位ID，维表 mfg_stations.id → name（工位名称）；按工位分组时 JOIN 取 name"
+        alias: ["工位"]
+        sync: true
+        enum_source: mfg_stations.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "零件ID，维表 plm_parts.id → name（零件名称）"
+        alias: ["零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: cpk
+        type: NUMERIC(6,2)
+        role: measure
+        description: "过程能力指数 CPK"
+        alias: ["CPK", "过程能力"]
+      - name: measured_at
+        type: TIMESTAMP
+        role: dimension
+        description: "测量时间"
+        alias: ["测量时间", "时间"]
+  - name: qms_calibration_records
+    role: fact
+    description: 量具校准记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: gauge_no
+        type: VARCHAR(40)
+        role: dimension
+        description: "量具编号"
+        alias: ["量具号"]
+      - name: station_id
+        type: BIGINT
+        role: foreign_key
+        description: "使用工位ID，维表 mfg_stations.id → name（工位名称）"
+        alias: ["工位"]
+        sync: true
+        enum_source: mfg_stations.name
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "校准结论"
+        alias: ["结论", "结果"]
+        sync: true
+      - name: calibrated_at
+        type: DATE
+        role: dimension
+        description: "校准日期"
+        alias: ["校准日期"]
+      - name: next_due
+        type: DATE
+        role: dimension
+        description: "下次校准到期日"
+        alias: ["到期日", "下次校准"]
+  - name: qms_capa_measures
+    role: fact
+    description: CAPA 纠正预防措施
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: capa_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "CAPA 编号"
+        alias: ["CAPA号"]
+      - name: source
+        type: VARCHAR(12)
+        role: dimension
+        description: "措施来源"
+        alias: ["来源"]
+        sync: true
+      - name: description
+        type: VARCHAR(400)
+        role: dimension
+        description: "措施描述"
+        alias: ["描述", "措施"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: sal_leads
+    role: fact
+    description: 销售线索
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: lead_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "线索编号"
+        alias: ["线索号"]
+      - name: channel
+        type: VARCHAR(12)
+        role: dimension
+        description: "线索渠道"
+        alias: ["渠道", "来源"]
+        sync: true
+      - name: region_id
+        type: BIGINT
+        role: foreign_key
+        description: "大区ID，维表 sal_regions.id → name（大区名称）；按大区分组时 JOIN 取 name ★行级权限列（sales 角色按 region_id 隔离）"
+        alias: ["大区", "区域"]
+        sync: true
+        enum_source: sal_regions.name
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组时 JOIN 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "意向车型ID，维表 veh_models.id → name（车型名称）；按意向车型分组时 JOIN 取 name"
+        alias: ["意向车型", "车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "线索状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: sal_test_drives
+    role: fact
+    description: 试乘试驾记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: drive_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "试驾编号"
+        alias: ["试驾号"]
+      - name: customer_id
+        type: BIGINT
+        role: foreign_key
+        description: "客户ID，维表 sal_customers.id → cust_no（客户编号）"
+        alias: ["客户"]
+        enum_source: sal_customers.name
+      - name: model_id
+        type: BIGINT
+        role: foreign_key
+        description: "试驾车型ID，维表 veh_models.id → name（车型名称）；按车型分组时 JOIN 取 name"
+        alias: ["试驾车型", "车型"]
+        sync: true
+        enum_source: veh_models.name
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组时 JOIN 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: score
+        type: NUMERIC(14,2)
+        role: measure
+        description: "客户试驾评分（1-10）"
+        alias: ["评分", "试驾评分"]
+      - name: mileage
+        type: NUMERIC(14,2)
+        role: measure
+        description: "试驾里程（公里）"
+        alias: ["试驾里程", "里程"]
+      - name: drive_date
+        type: DATE
+        role: dimension
+        description: "试驾日期"
+        alias: ["试驾日期", "日期"]
+  - name: sal_sales_orders
+    role: fact
+    description: 销售订单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: order_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "订单编号"
+        alias: ["订单号", "销售单号"]
+      - name: customer_id
+        type: BIGINT
+        role: foreign_key
+        description: "下单客户ID，维表 sal_customers.id → cust_no（客户编号）；按客户分组时 JOIN 取 cust_no"
+        alias: ["客户"]
+        enum_source: sal_customers.name
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组/统计销售额时 JOIN sal_dealers 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: trim_id
+        type: BIGINT
+        role: foreign_key
+        description: "订购款型ID，维表 veh_trims.id → name（款型名称）；按款型/车型统计时 JOIN veh_trims（再 JOIN veh_models 取车型）"
+        alias: ["款型", "配置", "车型"]
+        sync: true
+        enum_source: veh_trims.name
+      - name: region_id
+        type: BIGINT
+        role: foreign_key
+        description: "成交大区ID，维表 sal_regions.id → name（大区名称）；按大区分组时 JOIN 取 name ★行级权限列（sales 角色按 region_id 隔离）"
+        alias: ["大区", "区域"]
+        sync: true
+        enum_source: sal_regions.name
+      - name: order_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "订单类型"
+        alias: ["类型", "购车方式"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "订单状态"
+        alias: ["状态", "订单状态"]
+        sync: true
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "订单金额（万元）"
+        alias: ["金额", "成交金额", "销售额", "车价"]
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: sal_deliveries
+    role: fact
+    description: 交付记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: delivery_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "交付编号"
+        alias: ["交付号"]
+      - name: order_id
+        type: BIGINT
+        role: foreign_key
+        description: "销售订单ID，维表 sal_sales_orders.id → order_no（订单编号）；按订单/经销商统计交付时 JOIN 取 order_no"
+        alias: ["订单", "销售订单"]
+        enum_source: sal_sales_orders.name
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "交付整车ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: transport_mode
+        type: VARCHAR(12)
+        role: dimension
+        description: "运输方式"
+        alias: ["运输", "方式"]
+        sync: true
+      - name: lead_days
+        type: INTEGER
+        role: measure
+        description: "交付周期（天，锁单到交付）"
+        alias: ["交付周期", "交付天数", "周期"]
+      - name: delivered_at
+        type: DATE
+        role: dimension
+        description: "交付日期"
+        alias: ["交付日期", "交付时间", "日期"]
+  - name: sal_invoices
+    role: fact
+    description: 发票记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: invoice_no
+        type: VARCHAR(40)
+        role: dimension
+        description: "发票号码"
+        alias: ["发票号"]
+      - name: order_id
+        type: BIGINT
+        role: foreign_key
+        description: "销售订单ID，维表 sal_sales_orders.id → order_no（订单编号）"
+        alias: ["订单", "销售订单"]
+        enum_source: sal_sales_orders.name
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "开票金额（万元）"
+        alias: ["金额", "开票金额"]
+      - name: tax
+        type: NUMERIC(14,2)
+        role: measure
+        description: "税额（万元）"
+        alias: ["税额", "税"]
+      - name: issued_at
+        type: DATE
+        role: dimension
+        description: "开票日期"
+        alias: ["开票日期", "日期"]
+  - name: sal_financing_applications
+    role: fact
+    description: 金融贷款申请
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: app_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "申请编号"
+        alias: ["申请号", "贷款申请号"]
+      - name: order_id
+        type: BIGINT
+        role: foreign_key
+        description: "销售订单ID，维表 sal_sales_orders.id → order_no（订单编号）"
+        alias: ["订单", "销售订单"]
+        enum_source: sal_sales_orders.name
+      - name: bank
+        type: VARCHAR(80)
+        role: dimension
+        description: "金融机构"
+        alias: ["银行", "金融机构"]
+      - name: down_payment_ratio
+        type: NUMERIC(6,4)
+        role: measure
+        description: "首付比例（0-1）"
+        alias: ["首付比例", "首付"]
+      - name: loan_amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "贷款金额（万元）"
+        alias: ["贷款额", "贷款金额"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "申请状态"
+        alias: ["状态"]
+        sync: true
+      - name: created_at
+        type: TIMESTAMP
+        role: date
+        description: "创建时间"
+        alias: ["创建日期", "时间", "日期", "提单时间"]
+      - name: updated_at
+        type: TIMESTAMP
+        role: date
+        description: "更新时间"
+        alias: ["修改时间"]
+  - name: sal_inventories
+    role: fact
+    description: 经销商库存
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组时 JOIN 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: trim_id
+        type: BIGINT
+        role: foreign_key
+        description: "款型ID，维表 veh_trims.id → name（款型名称）；按款型分组时 JOIN 取 name"
+        alias: ["款型", "配置"]
+        sync: true
+        enum_source: veh_trims.name
+      - name: color_id
+        type: BIGINT
+        role: foreign_key
+        description: "颜色ID，维表 veh_colors.id → name（颜色名称）"
+        alias: ["颜色", "车色"]
+        sync: true
+        enum_source: veh_colors.name
+      - name: stock_days
+        type: INTEGER
+        role: measure
+        description: "库龄（天）"
+        alias: ["库龄", "库存天数"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "库存状态"
+        alias: ["状态"]
+        sync: true
+      - name: arrived_at
+        type: DATE
+        role: dimension
+        description: "到店日期"
+        alias: ["到店日期"]
+  - name: sal_customer_visits
+    role: fact
+    description: 客户到店登记
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: customer_id
+        type: BIGINT
+        role: foreign_key
+        description: "客户ID，维表 sal_customers.id → cust_no（客户编号）"
+        alias: ["客户"]
+        enum_source: sal_customers.name
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组时 JOIN 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: purpose
+        type: VARCHAR(12)
+        role: dimension
+        description: "到店目的"
+        alias: ["目的", "事由"]
+        sync: true
+      - name: visited_at
+        type: TIMESTAMP
+        role: dimension
+        description: "到店时间"
+        alias: ["到店时间", "时间"]
+  - name: svc_appointments
+    role: fact
+    description: 服务预约
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: apt_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "预约编号"
+        alias: ["预约号"]
+      - name: customer_id
+        type: BIGINT
+        role: foreign_key
+        description: "客户ID，维表 sal_customers.id → cust_no（客户编号）"
+        alias: ["客户"]
+        enum_source: sal_customers.name
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "服务中心ID，维表 svc_service_centers.id → name（服务中心名称）；按网点分组时 JOIN 取 name"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: service_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "服务类型"
+        alias: ["类型"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "预约状态"
+        alias: ["状态"]
+        sync: true
+      - name: booked_at
+        type: TIMESTAMP
+        role: dimension
+        description: "预约到店时间"
+        alias: ["预约时间"]
+      - name: arrived_at
+        type: TIMESTAMP
+        role: dimension
+        description: "实际到店时间"
+        alias: ["实际到店时间", "到店时间"]
+  - name: svc_work_orders
+    role: fact
+    description: 维修工单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: wo_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "维修工单号"
+        alias: ["工单号", "维修单号"]
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）；按车辆统计维修时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "服务中心ID，维表 svc_service_centers.id → name（服务中心名称）；按网点分组/统计维修量时 JOIN 取 name"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: advisor_id
+        type: BIGINT
+        role: foreign_key
+        description: "服务顾问ID，维表 svc_service_advisors.id → name（顾问姓名）"
+        alias: ["服务顾问", "顾问"]
+        sync: true
+        enum_source: svc_service_advisors.name
+      - name: mechanic_id
+        type: BIGINT
+        role: foreign_key
+        description: "主修技师ID，维表 svc_mechanics.id → name（技师姓名）；按技师分组时 JOIN 取 name，可为空"
+        alias: ["技师", "维修师傅"]
+        sync: true
+        enum_source: svc_mechanics.name
+      - name: wo_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "工单类型"
+        alias: ["类型", "维修类型"]
+        sync: true
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "工单状态"
+        alias: ["状态"]
+        sync: true
+      - name: mileage
+        type: INTEGER
+        role: measure
+        description: "进厂里程（公里）"
+        alias: ["里程", "进厂里程"]
+      - name: labor_hours
+        type: NUMERIC(14,2)
+        role: measure
+        description: "维修工时（小时）"
+        alias: ["工时", "维修工时"]
+      - name: intake_at
+        type: TIMESTAMP
+        role: dimension
+        description: "进厂时间"
+        alias: ["进厂时间", "时间"]
+      - name: finished_at
+        type: TIMESTAMP
+        role: dimension
+        description: "完工时间"
+        alias: ["完工时间"]
+  - name: svc_wo_labor_items
+    role: fact
+    description: 工单工时项目
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: work_order_id
+        type: BIGINT
+        role: foreign_key
+        description: "维修工单ID，维表 svc_work_orders.id → wo_no（维修工单号）；按工单统计工时费用时 JOIN 取 wo_no"
+        alias: ["工单", "维修工单"]
+        enum_source: svc_work_orders.name
+      - name: labor_item_id
+        type: BIGINT
+        role: foreign_key
+        description: "工时项目ID，维表 svc_labor_items.id → name（工时项目名称）；按项目分组时 JOIN 取 name"
+        alias: ["工时项目", "项目", "服务项目"]
+        sync: true
+        enum_source: svc_labor_items.name
+      - name: hours
+        type: NUMERIC(14,2)
+        role: measure
+        description: "工时数（小时）"
+        alias: ["工时"]
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "工时费（元）"
+        alias: ["金额", "工时费"]
+  - name: svc_wo_parts
+    role: fact
+    description: 工单配件消耗
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: work_order_id
+        type: BIGINT
+        role: foreign_key
+        description: "维修工单ID，维表 svc_work_orders.id → wo_no（维修工单号）；按工单统计配件费用时 JOIN 取 wo_no"
+        alias: ["工单", "维修工单"]
+        enum_source: svc_work_orders.name
+      - name: part_id
+        type: BIGINT
+        role: foreign_key
+        description: "配件ID，维表 plm_parts.id → name（零件名称）；按配件分组/统计配件消耗时 JOIN 取 name"
+        alias: ["配件", "零件"]
+        sync: true
+        enum_source: plm_parts.name
+      - name: quantity
+        type: INTEGER
+        role: measure
+        description: "消耗数量"
+        alias: ["数量", "用量"]
+      - name: unit_price
+        type: NUMERIC(14,2)
+        role: measure
+        description: "配件单价（元）"
+        alias: ["单价", "价格"]
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "配件金额（元）"
+        alias: ["金额", "配件金额"]
+  - name: svc_warranty_claims
+    role: fact
+    description: 质保索赔单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: claim_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "索赔编号"
+        alias: ["索赔号"]
+      - name: work_order_id
+        type: BIGINT
+        role: foreign_key
+        description: "维修工单ID，维表 svc_work_orders.id → wo_no（维修工单号）"
+        alias: ["工单", "维修工单"]
+        enum_source: svc_work_orders.name
+      - name: policy_id
+        type: BIGINT
+        role: foreign_key
+        description: "适用政策ID，维表 svc_warranty_policies.id → name（政策名称）"
+        alias: ["政策", "质保政策"]
+        sync: true
+        enum_source: svc_warranty_policies.name
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "索赔金额（元）"
+        alias: ["金额", "索赔金额"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "索赔状态"
+        alias: ["状态"]
+        sync: true
+      - name: submitted_at
+        type: DATE
+        role: dimension
+        description: "提交日期"
+        alias: ["提交日期", "日期"]
+  - name: svc_customer_feedback
+    role: fact
+    description: 服务回访满意度
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: work_order_id
+        type: BIGINT
+        role: foreign_key
+        description: "维修工单ID，维表 svc_work_orders.id → wo_no（维修工单号）；按工单关联回访时 JOIN 取 wo_no"
+        alias: ["工单", "维修工单"]
+        enum_source: svc_work_orders.name
+      - name: score
+        type: INTEGER
+        role: measure
+        description: "满意度评分（1-5）"
+        alias: ["评分", "满意度", "满意度评分"]
+      - name: nps_bucket
+        type: VARCHAR(12)
+        role: dimension
+        description: "NPS 分类"
+        alias: ["NPS"]
+        sync: true
+      - name: comment
+        type: VARCHAR(400)
+        role: dimension
+        description: "回访评语"
+        alias: ["评语", "评价"]
+      - name: surveyed_at
+        type: TIMESTAMP
+        role: dimension
+        description: "回访时间"
+        alias: ["回访时间", "时间"]
+  - name: svc_roadside_assists
+    role: fact
+    description: 道路救援记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: case_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "救援案例号"
+        alias: ["救援号", "案例号"]
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "出援服务中心ID，维表 svc_service_centers.id → name（服务中心名称）；按网点分组时 JOIN 取 name"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: reason
+        type: VARCHAR(12)
+        role: dimension
+        description: "救援原因"
+        alias: ["原因", "类型"]
+        sync: true
+      - name: response_minutes
+        type: INTEGER
+        role: measure
+        description: "响应时长（分钟）"
+        alias: ["响应时长", "响应"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: svc_maintenance_signups
+    role: fact
+    description: 保养套餐订购
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: customer_id
+        type: BIGINT
+        role: foreign_key
+        description: "客户ID，维表 sal_customers.id → cust_no（客户编号）"
+        alias: ["客户"]
+        enum_source: sal_customers.name
+      - name: package_id
+        type: BIGINT
+        role: foreign_key
+        description: "套餐ID，维表 svc_maintenance_packages.id → name（套餐名称）；按套餐分组时 JOIN 取 name"
+        alias: ["套餐", "保养套餐"]
+        sync: true
+        enum_source: svc_maintenance_packages.name
+      - name: paid_amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "实付金额（元）"
+        alias: ["实付", "金额"]
+      - name: signed_at
+        type: DATE
+        role: dimension
+        description: "订购日期"
+        alias: ["订购日期", "日期"]
+      - name: channel
+        type: VARCHAR(12)
+        role: dimension
+        description: "订购渠道"
+        alias: ["渠道"]
+        sync: true
+  - name: rcl_recalls
+    role: dim
+    description: 召回活动
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: recall_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "召回编号"
+        alias: ["召回号"]
+      - name: name
+        type: VARCHAR(200)
+        role: dimension
+        description: "召回活动名称"
+        alias: ["召回活动", "活动名称", "服务活动"]
+        sync: true
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "活动级别"
+        alias: ["级别", "类型"]
+        sync: true
+      - name: authority
+        type: VARCHAR(60)
+        role: dimension
+        description: "监管机构"
+        alias: ["机构"]
+      - name: announce_date
+        type: DATE
+        role: dimension
+        description: "公告日期"
+        alias: ["公告日期"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "召回状态"
+        alias: ["状态"]
+        sync: true
+  - name: rcl_recall_vehicles
+    role: fact
+    description: 召回车辆清单
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: recall_id
+        type: BIGINT
+        role: foreign_key
+        description: "召回活动ID，维表 rcl_recalls.id → name（召回活动名称）；按召回活动分组时 JOIN 取 name"
+        alias: ["召回活动", "召回"]
+        sync: true
+        enum_source: rcl_recalls.name
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "召回车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: region_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆所属大区ID，维表 sal_regions.id → name（大区名称）；按大区分组时 JOIN 取 name ★行级权限列（sales 角色按 region_id 隔离）"
+        alias: ["大区", "区域"]
+        sync: true
+        enum_source: sal_regions.name
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "处置状态"
+        alias: ["状态", "召回进度"]
+        sync: true
+      - name: notified_at
+        type: DATE
+        role: dimension
+        description: "通知日期"
+        alias: ["通知日期"]
+  - name: rcl_recall_remedies
+    role: fact
+    description: 召回处置记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: recall_vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "召回车辆清单ID，维表 rcl_recall_vehicles.id"
+        alias: ["召回车辆"]
+        enum_source: rcl_recall_vehicles.name
+      - name: service_center_id
+        type: BIGINT
+        role: foreign_key
+        description: "处置服务中心ID，维表 svc_service_centers.id → name（服务中心名称）；按网点分组时 JOIN 取 name"
+        alias: ["服务中心", "网点"]
+        sync: true
+        enum_source: svc_service_centers.name
+      - name: remedy_date
+        type: DATE
+        role: dimension
+        description: "处置日期"
+        alias: ["处置日期", "日期"]
+      - name: cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "单车处置成本（元）"
+        alias: ["成本", "处置成本"]
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "处置结果"
+        alias: ["结果"]
+        sync: true
+  - name: rcl_recall_costs
+    role: fact
+    description: 召回成本明细
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: recall_id
+        type: BIGINT
+        role: foreign_key
+        description: "召回活动ID，维表 rcl_recalls.id → name（召回活动名称）"
+        alias: ["召回活动", "召回"]
+        sync: true
+        enum_source: rcl_recalls.name
+      - name: cost_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "成本类型"
+        alias: ["类型"]
+        sync: true
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "金额（万元）"
+        alias: ["金额", "成本"]
+      - name: occurred_month
+        type: DATE
+        role: dimension
+        description: "发生月份"
+        alias: ["月份"]
+  - name: iot_trip_records
+    role: fact
+    description: 行程记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）；按车辆统计里程时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: started_at
+        type: TIMESTAMP
+        role: dimension
+        description: "行程开始时间"
+        alias: ["开始时间", "时间"]
+      - name: ended_at
+        type: TIMESTAMP
+        role: dimension
+        description: "行程结束时间"
+        alias: ["结束时间"]
+      - name: distance_km
+        type: NUMERIC(14,2)
+        role: measure
+        description: "行驶里程（公里）"
+        alias: ["里程", "行驶里程", "公里数"]
+      - name: energy_kwh
+        type: NUMERIC(14,2)
+        role: measure
+        description: "耗电量（kWh）"
+        alias: ["耗电量", "电量", "能耗"]
+      - name: avg_speed
+        type: NUMERIC(14,2)
+        role: measure
+        description: "平均车速（km/h）"
+        alias: ["平均车速", "速度"]
+      - name: max_speed
+        type: INTEGER
+        role: measure
+        description: "最高车速（km/h）"
+        alias: ["最高车速"]
+      - name: drive_mode
+        type: VARCHAR(12)
+        role: dimension
+        description: "驾驶模式"
+        alias: ["模式", "驾驶模式"]
+        sync: true
+  - name: iot_vehicle_alerts
+    role: fact
+    description: 车辆告警事件
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: alert_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "告警类型"
+        alias: ["类型", "告警类别"]
+        sync: true
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "告警级别"
+        alias: ["级别"]
+        sync: true
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+      - name: cleared_at
+        type: TIMESTAMP
+        role: dimension
+        description: "解除时间"
+        alias: ["解除时间"]
+  - name: iot_dtc_events
+    role: fact
+    description: DTC 诊断事件
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）；按车辆统计故障码时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: fault_code_id
+        type: BIGINT
+        role: foreign_key
+        description: "故障码ID，维表 qms_fault_codes.id → dtc_code（故障码）；按故障码/系统统计时 JOIN qms_fault_codes 取 dtc_code/name"
+        alias: ["故障码", "DTC"]
+        sync: true
+        enum_source: qms_fault_codes.name
+      - name: mileage
+        type: INTEGER
+        role: measure
+        description: "发生时里程（公里）"
+        alias: ["里程"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "事件状态"
+        alias: ["状态"]
+        sync: true
+  - name: iot_charging_sessions
+    role: fact
+    description: 充电会话
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）；按车辆统计充电时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: charge_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "充电类型"
+        alias: ["类型", "充电方式"]
+        sync: true
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "充电城市"
+        alias: ["城市"]
+      - name: energy_kwh
+        type: NUMERIC(14,2)
+        role: measure
+        description: "充电电量（kWh）"
+        alias: ["电量", "充电量", "充电电量"]
+      - name: cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "充电费用（元）"
+        alias: ["费用", "金额", "充电费用"]
+      - name: duration_min
+        type: INTEGER
+        role: measure
+        description: "充电时长（分钟）"
+        alias: ["时长", "充电时长"]
+      - name: started_at
+        type: TIMESTAMP
+        role: dimension
+        description: "开始时间"
+        alias: ["开始时间", "时间"]
+  - name: iot_energy_daily
+    role: fact
+    description: 能耗日统计（车×日）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: stat_date
+        type: DATE
+        role: dimension
+        description: "统计日期"
+        alias: ["日期", "统计日期"]
+      - name: distance_km
+        type: NUMERIC(14,2)
+        role: measure
+        description: "当日里程（公里）"
+        alias: ["里程", "当日里程"]
+      - name: energy_kwh
+        type: NUMERIC(14,2)
+        role: measure
+        description: "当日耗电（kWh）"
+        alias: ["耗电", "能耗", "当日能耗"]
+      - name: regen_kwh
+        type: NUMERIC(14,2)
+        role: measure
+        description: "动能回收电量（kWh）"
+        alias: ["回收电量", "动能回收"]
+  - name: iot_geofence_events
+    role: fact
+    description: 电子围栏事件
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: event_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "围栏事件类型"
+        alias: ["类型"]
+        sync: true
+      - name: fence_name
+        type: VARCHAR(80)
+        role: dimension
+        description: "围栏名称"
+        alias: ["围栏"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: ota_campaigns
+    role: dim
+    description: OTA 推送活动
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(150)
+        role: dimension
+        description: "OTA 活动名称"
+        alias: ["OTA活动", "推送活动", "活动"]
+        sync: true
+      - name: package_id
+        type: BIGINT
+        role: foreign_key
+        description: "软件包ID，维表 ota_packages.id → version（软件版本）"
+        alias: ["软件包", "版本"]
+        enum_source: ota_packages.name
+      - name: strategy
+        type: VARCHAR(12)
+        role: dimension
+        description: "推送策略"
+        alias: ["策略", "推送策略"]
+        sync: true
+      - name: started_at
+        type: TIMESTAMP
+        role: dimension
+        description: "开始时间"
+        alias: ["开始时间"]
+      - name: status
+        type: VARCHAR(12)
+        role: dimension
+        description: "活动状态"
+        alias: ["状态"]
+        sync: true
+  - name: ota_installations
+    role: fact
+    description: OTA 安装记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: campaign_id
+        type: BIGINT
+        role: foreign_key
+        description: "OTA 活动ID，维表 ota_campaigns.id → name（活动名称）；按活动分组/统计成功率时 JOIN 取 name"
+        alias: ["OTA活动", "活动"]
+        sync: true
+        enum_source: ota_campaigns.name
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）；按车辆统计时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "安装结果"
+        alias: ["结果", "安装状态"]
+        sync: true
+      - name: duration_min
+        type: INTEGER
+        role: measure
+        description: "安装耗时（分钟）"
+        alias: ["耗时", "安装时长"]
+      - name: started_at
+        type: TIMESTAMP
+        role: dimension
+        description: "开始时间"
+        alias: ["开始时间", "时间"]
+  - name: ota_install_failures
+    role: fact
+    description: OTA 安装失败明细
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: installation_id
+        type: BIGINT
+        role: foreign_key
+        description: "安装记录ID，维表 ota_installations.id"
+        alias: ["安装记录"]
+        enum_source: ota_installations.name
+      - name: error_code
+        type: VARCHAR(30)
+        role: dimension
+        description: "错误码"
+        alias: ["错误码"]
+      - name: phase
+        type: VARCHAR(12)
+        role: dimension
+        description: "失败阶段"
+        alias: ["阶段"]
+        sync: true
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: ota_ecu_software_versions
+    role: fact
+    description: 车辆 ECU 软件版本快照
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: ecu_id
+        type: BIGINT
+        role: foreign_key
+        description: "ECU ID，维表 ota_ecus.id → name（ECU 名称）；按 ECU 分组时 JOIN 取 name"
+        alias: ["ECU", "控制器"]
+        sync: true
+        enum_source: ota_ecus.name
+      - name: version
+        type: VARCHAR(30)
+        role: dimension
+        description: "当前软件版本"
+        alias: ["版本", "软件版本"]
+      - name: flashed_at
+        type: TIMESTAMP
+        role: dimension
+        description: "刷写时间"
+        alias: ["刷写时间", "时间"]
+  - name: iot_driving_behavior_scores
+    role: fact
+    description: 驾驶行为评分（月度）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: stat_month
+        type: DATE
+        role: dimension
+        description: "统计月份"
+        alias: ["月份", "统计月"]
+      - name: score
+        type: NUMERIC(14,2)
+        role: measure
+        description: "驾驶行为评分（0-100）"
+        alias: ["评分", "驾驶评分"]
+      - name: harsh_brake_count
+        type: INTEGER
+        role: measure
+        description: "急刹次数"
+        alias: ["急刹", "急刹车次数"]
+      - name: harsh_accel_count
+        type: INTEGER
+        role: measure
+        description: "急加速次数"
+        alias: ["急加速", "急加速次数"]
+  - name: bat_battery_packs
+    role: fact
+    description: 电池包档案
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: pack_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "电池包编号"
+        alias: ["电池包号", "电池编号"]
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "装配整车ID，维表 veh_vehicles.id → vin（车架号）；按车辆查询电池时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: supplier_id
+        type: BIGINT
+        role: foreign_key
+        description: "电池供应商ID，维表 plm_suppliers.id → name（供应商名称）；按供应商分组时 JOIN 取 name"
+        alias: ["供应商", "厂家"]
+        sync: true
+        enum_source: plm_suppliers.name
+      - name: capacity_kwh
+        type: NUMERIC(14,2)
+        role: measure
+        description: "标称容量（kWh）"
+        alias: ["容量", "电池容量"]
+      - name: chemistry
+        type: VARCHAR(12)
+        role: dimension
+        description: "电池化学体系"
+        alias: ["化学体系", "电芯类型"]
+        sync: true
+      - name: manufactured_at
+        type: DATE
+        role: dimension
+        description: "生产日期"
+        alias: ["生产日期", "出厂日期"]
+  - name: bat_soh_records
+    role: fact
+    description: 电池健康度 SOH 记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: pack_id
+        type: BIGINT
+        role: foreign_key
+        description: "电池包ID，维表 bat_battery_packs.id → pack_no（电池包编号）；按电池包统计 SOH 时 JOIN 取 pack_no"
+        alias: ["电池包", "电池"]
+        enum_source: bat_battery_packs.name
+      - name: soh
+        type: NUMERIC(14,2)
+        role: measure
+        description: "电池健康度 SOH（%）"
+        alias: ["SOH", "健康度", "电池健康度"]
+      - name: temperature
+        type: NUMERIC(14,2)
+        role: measure
+        description: "检测时温度（℃）"
+        alias: ["温度"]
+      - name: mileage
+        type: INTEGER
+        role: measure
+        description: "检测时里程（公里）"
+        alias: ["里程"]
+      - name: measured_at
+        type: DATE
+        role: dimension
+        description: "检测日期"
+        alias: ["检测日期", "日期"]
+  - name: bat_pack_inspections
+    role: fact
+    description: 电池包检测记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: pack_id
+        type: BIGINT
+        role: foreign_key
+        description: "电池包ID，维表 bat_battery_packs.id → pack_no（电池包编号）"
+        alias: ["电池包", "电池"]
+        enum_source: bat_battery_packs.name
+      - name: inspection_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "检测类型"
+        alias: ["类型"]
+        sync: true
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "检测结果"
+        alias: ["结论", "结果"]
+        sync: true
+      - name: inspected_at
+        type: DATE
+        role: dimension
+        description: "检测日期"
+        alias: ["检测日期", "日期"]
+  - name: bat_battery_faults
+    role: fact
+    description: 电池故障记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: pack_id
+        type: BIGINT
+        role: foreign_key
+        description: "电池包ID，维表 bat_battery_packs.id → pack_no（电池包编号）；按电池包统计故障时 JOIN 取 pack_no"
+        alias: ["电池包", "电池"]
+        enum_source: bat_battery_packs.name
+      - name: fault_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "故障类型"
+        alias: ["类型"]
+        sync: true
+      - name: severity
+        type: VARCHAR(12)
+        role: dimension
+        description: "严重程度"
+        alias: ["严重级别", "级别"]
+        sync: true
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: bat_battery_recycles
+    role: fact
+    description: 电池回收记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: pack_id
+        type: BIGINT
+        role: foreign_key
+        description: "电池包ID，维表 bat_battery_packs.id → pack_no（电池包编号）"
+        alias: ["电池包", "电池"]
+        enum_source: bat_battery_packs.name
+      - name: recycled_at
+        type: DATE
+        role: dimension
+        description: "回收日期"
+        alias: ["回收日期", "日期"]
+      - name: residual_value
+        type: NUMERIC(14,2)
+        role: measure
+        description: "残值（元）"
+        alias: ["残值", "回收价值"]
+      - name: channel
+        type: VARCHAR(12)
+        role: dimension
+        description: "回收渠道"
+        alias: ["渠道"]
+        sync: true
+  - name: bat_charge_cycles
+    role: fact
+    description: 充放电循环统计（月度）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: pack_id
+        type: BIGINT
+        role: foreign_key
+        description: "电池包ID，维表 bat_battery_packs.id → pack_no（电池包编号）"
+        alias: ["电池包", "电池"]
+        enum_source: bat_battery_packs.name
+      - name: stat_month
+        type: DATE
+        role: dimension
+        description: "统计月份"
+        alias: ["月份", "统计月"]
+      - name: cycle_count
+        type: INTEGER
+        role: measure
+        description: "循环次数"
+        alias: ["循环次数", "充放电次数"]
+      - name: dc_fast_count
+        type: INTEGER
+        role: measure
+        description: "快充次数"
+        alias: ["快充次数"]
+  - name: ad_test_drives
+    role: fact
+    description: 智驾路测记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: drive_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "路测编号"
+        alias: ["路测号"]
+      - name: test_vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "测试车辆ID，维表 ad_test_vehicles.id → plate_no（测试车牌号）；按测试车分组时 JOIN 取 plate_no"
+        alias: ["测试车", "测试车辆"]
+        enum_source: ad_test_vehicles.name
+      - name: scenario_id
+        type: BIGINT
+        role: foreign_key
+        description: "主场景ID，维表 ad_scenarios.id → name（场景名称）；按场景分组时 JOIN 取 name"
+        alias: ["场景", "测试场景"]
+        sync: true
+        enum_source: ad_scenarios.name
+      - name: drive_date
+        type: DATE
+        role: dimension
+        description: "测试日期"
+        alias: ["测试日期", "日期"]
+      - name: distance_km
+        type: NUMERIC(14,2)
+        role: measure
+        description: "测试里程（公里）"
+        alias: ["里程", "测试里程"]
+      - name: weather
+        type: VARCHAR(12)
+        role: dimension
+        description: "天气"
+        alias: ["天气", "天气条件"]
+        sync: true
+      - name: result
+        type: VARCHAR(12)
+        role: dimension
+        description: "测试结论"
+        alias: ["结论", "结果"]
+        sync: true
+  - name: ad_scenario_runs
+    role: fact
+    description: 场景执行记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: test_drive_id
+        type: BIGINT
+        role: foreign_key
+        description: "路测记录ID，维表 ad_test_drives.id → drive_no（路测编号）"
+        alias: ["路测记录", "路测"]
+        enum_source: ad_test_drives.name
+      - name: scenario_id
+        type: BIGINT
+        role: foreign_key
+        description: "场景ID，维表 ad_scenarios.id → name（场景名称）；按场景统计通过率时 JOIN ad_scenarios 取 name"
+        alias: ["场景", "测试场景"]
+        sync: true
+        enum_source: ad_scenarios.name
+      - name: passed
+        type: VARCHAR(12)
+        role: dimension
+        description: "是否通过"
+        alias: ["通过", "是否通过", "结果"]
+        sync: true
+      - name: duration_s
+        type: INTEGER
+        role: measure
+        description: "耗时（秒）"
+        alias: ["耗时"]
+  - name: ad_disengagements
+    role: fact
+    description: 智驾接管事件
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: test_drive_id
+        type: BIGINT
+        role: foreign_key
+        description: "路测记录ID，维表 ad_test_drives.id → drive_no（路测编号）；按路测统计接管次数时 JOIN 取 drive_no"
+        alias: ["路测记录", "路测"]
+        enum_source: ad_test_drives.name
+      - name: type
+        type: VARCHAR(12)
+        role: dimension
+        description: "接管类型"
+        alias: ["类型"]
+        sync: true
+      - name: reason
+        type: VARCHAR(12)
+        role: dimension
+        description: "接管原因"
+        alias: ["原因"]
+        sync: true
+      - name: speed
+        type: NUMERIC(14,2)
+        role: measure
+        description: "接管时车速（km/h）"
+        alias: ["车速", "速度"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: ad_mileage_records
+    role: fact
+    description: 智驾里程统计（测试车×日）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: test_vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "测试车辆ID，维表 ad_test_vehicles.id → plate_no（测试车牌号）；按测试车统计里程时 JOIN 取 plate_no"
+        alias: ["测试车", "测试车辆"]
+        enum_source: ad_test_vehicles.name
+      - name: stat_date
+        type: DATE
+        role: dimension
+        description: "统计日期"
+        alias: ["日期", "统计日期"]
+      - name: auto_km
+        type: NUMERIC(14,2)
+        role: measure
+        description: "智驾里程（公里）"
+        alias: ["智驾里程", "自动驾驶里程"]
+      - name: manual_km
+        type: NUMERIC(14,2)
+        role: measure
+        description: "人工驾驶里程（公里）"
+        alias: ["人工里程"]
+      - name: city
+        type: VARCHAR(30)
+        role: dimension
+        description: "测试城市"
+        alias: ["城市"]
+  - name: ad_safety_incidents
+    role: fact
+    description: 测试安全事故
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: test_drive_id
+        type: BIGINT
+        role: foreign_key
+        description: "路测记录ID，维表 ad_test_drives.id → drive_no（路测编号）"
+        alias: ["路测记录", "路测"]
+        enum_source: ad_test_drives.name
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "事故等级"
+        alias: ["等级"]
+        sync: true
+      - name: description
+        type: VARCHAR(400)
+        role: dimension
+        description: "事故描述"
+        alias: ["描述"]
+      - name: occurred_at
+        type: TIMESTAMP
+        role: dimension
+        description: "发生时间"
+        alias: ["发生时间", "时间"]
+  - name: ad_perception_kpi
+    role: fact
+    description: 感知指标记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: scenario_id
+        type: BIGINT
+        role: foreign_key
+        description: "场景ID，维表 ad_scenarios.id → name（场景名称）；按场景分组时 JOIN 取 name"
+        alias: ["场景"]
+        sync: true
+        enum_source: ad_scenarios.name
+      - name: detection_rate
+        type: NUMERIC(7,4)
+        role: measure
+        description: "目标检出率（0-1）"
+        alias: ["检出率"]
+      - name: false_positive_rate
+        type: NUMERIC(7,4)
+        role: measure
+        description: "误检率（0-1）"
+        alias: ["误检率"]
+      - name: measured_at
+        type: DATE
+        role: dimension
+        description: "测量日期"
+        alias: ["测量日期", "日期"]
+  - name: fin_vehicle_costs
+    role: fact
+    description: 单车成本
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "整车ID，维表 veh_vehicles.id → vin（车架号）；按车辆统计成本时 JOIN 取 vin"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: material_cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "材料成本（元）"
+        alias: ["材料成本", "物料成本"]
+      - name: labor_cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "人工成本（元）"
+        alias: ["人工成本"]
+      - name: overhead_cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "制造费用（元）"
+        alias: ["制造费用", "摊销"]
+      - name: total_cost
+        type: NUMERIC(14,2)
+        role: measure
+        description: "总成本（元）"
+        alias: ["总成本", "单车成本", "成本"]
+  - name: fin_revenues
+    role: fact
+    description: 营收记录（月度）
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: stat_month
+        type: DATE
+        role: dimension
+        description: "统计月份"
+        alias: ["月份", "统计月"]
+      - name: region_id
+        type: BIGINT
+        role: foreign_key
+        description: "大区ID，维表 sal_regions.id → name（大区名称）；按大区分组时 JOIN 取 name ★行级权限列（sales 角色按 region_id 隔离）"
+        alias: ["大区", "区域"]
+        sync: true
+        enum_source: sal_regions.name
+      - name: business_line
+        type: VARCHAR(12)
+        role: dimension
+        description: "业务线"
+        alias: ["业务", "业务线"]
+        sync: true
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "营收金额（万元）"
+        alias: ["金额", "营收", "收入"]
+  - name: fin_incentives
+    role: fact
+    description: 补贴记录
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: vehicle_id
+        type: BIGINT
+        role: foreign_key
+        description: "车辆ID，维表 veh_vehicles.id → vin（车架号）"
+        alias: ["车辆", "整车"]
+        enum_source: veh_vehicles.name
+      - name: incentive_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "补贴类型"
+        alias: ["类型", "补贴类型"]
+        sync: true
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "补贴金额（元）"
+        alias: ["金额", "补贴金额"]
+      - name: granted_at
+        type: DATE
+        role: dimension
+        description: "拨付日期"
+        alias: ["拨付日期", "日期"]
+  - name: fin_dealer_settlements
+    role: fact
+    description: 经销商结算
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: settle_no
+        type: VARCHAR(30)
+        role: dimension
+        description: "结算单号"
+        alias: ["结算号"]
+      - name: dealer_id
+        type: BIGINT
+        role: foreign_key
+        description: "经销商ID，维表 sal_dealers.id → name（经销商名称）；按经销商分组时 JOIN 取 name"
+        alias: ["经销商", "门店"]
+        sync: true
+        enum_source: sal_dealers.name
+      - name: period
+        type: VARCHAR(10)
+        role: dimension
+        description: "结算期间"
+        alias: ["期间"]
+      - name: settle_type
+        type: VARCHAR(12)
+        role: dimension
+        description: "结算类型"
+        alias: ["类型"]
+        sync: true
+      - name: amount
+        type: NUMERIC(14,2)
+        role: measure
+        description: "结算金额（万元）"
+        alias: ["金额", "结算金额"]
+  - name: fin_manhour_rates
+    role: dim
+    description: 工时费率表
+    columns:
+      - name: id
+        type: BIGINT
+        role: primary_key
+        description: "主键"
+      - name: name
+        type: VARCHAR(80)
+        role: dimension
+        description: "费率名称"
+        alias: ["费率"]
+        sync: true
+      - name: rate
+        type: NUMERIC(14,2)
+        role: measure
+        description: "费率（元/小时）"
+        alias: ["费率值", "单价"]
+      - name: level
+        type: VARCHAR(12)
+        role: dimension
+        description: "费率档"
+        alias: ["档位"]
+        sync: true
+
+metrics:
+  - name: vehicle_count
+    description: 整车数量/下线量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["veh_vehicles.id"]
+    alias: ["整车数量", "下线量", "产量", "车辆数", "总数"]
+
+  - name: sales_order_count
+    description: 销售订单量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["sal_sales_orders.id"]
+    alias: ["订单量", "订单数", "销量", "成交量", "总数"]
+
+  - name: sales_amount
+    description: 销售总金额，SUM(sal_sales_orders.amount)，单位万元
+    relevant_columns: ["sal_sales_orders.amount"]
+    alias: ["销售额", "销售总额", "成交金额", "总销售额", "金额"]
+
+  - name: delivery_count
+    description: 交付量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["sal_deliveries.id"]
+    alias: ["交付量", "交付数", "交付总数"]
+
+  - name: avg_delivery_days
+    description: 平均交付周期（天），AVG(sal_deliveries.lead_days)
+    relevant_columns: ["sal_deliveries.lead_days"]
+    alias: ["平均交付周期", "交付周期", "平均交付天数"]
+
+  - name: complaint_count
+    description: 客户投诉量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["qms_customer_complaints.id"]
+    alias: ["投诉量", "投诉数", "投诉总数"]
+
+  - name: market_fault_count
+    description: 市场故障量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["qms_market_faults.id"]
+    alias: ["故障量", "市场故障数", "故障总数"]
+
+  - name: avg_ppm
+    description: 供应商平均 PPM（百万分之不良率），AVG(qms_ppm_records.ppm)
+    relevant_columns: ["qms_ppm_records.ppm"]
+    alias: ["平均PPM", "PPM", "不良率"]
+
+  - name: warranty_claim_amount
+    description: 质保索赔总金额，SUM(svc_warranty_claims.amount)，单位元
+    relevant_columns: ["svc_warranty_claims.amount"]
+    alias: ["索赔金额", "索赔总额", "三包费用"]
+
+  - name: svc_wo_count
+    description: 维修工单量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["svc_work_orders.id"]
+    alias: ["维修量", "工单量", "维修工单数", "进厂台次"]
+
+  - name: avg_repair_hours
+    description: 平均维修工时（小时），AVG(svc_work_orders.labor_hours)
+    relevant_columns: ["svc_work_orders.labor_hours"]
+    alias: ["平均维修工时", "维修工时", "平均工时"]
+
+  - name: defect_count
+    description: 生产缺陷数量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["mfg_station_defects.id"]
+    alias: ["缺陷数", "缺陷数量", "不良数"]
+
+  - name: issue_count
+    description: 研发缺陷问题单数量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["alm_issues.id"]
+    alias: ["问题数", "问题单数", "缺陷单数", "缺陷数"]
+
+  - name: test_pass_rate
+    description: 测试通过率，COUNT(result='通过')/COUNT(*)
+    relevant_columns: ["alm_test_executions.result"]
+    alias: ["通过率", "测试通过率"]
+
+  - name: recall_vehicle_count
+    description: 召回车辆数量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["rcl_recall_vehicles.id"]
+    alias: ["召回车辆数", "召回量", "涉及车辆数"]
+
+  - name: ota_success_rate
+    description: OTA 安装成功率，COUNT(result='成功')/COUNT(*)
+    relevant_columns: ["ota_installations.result"]
+    alias: ["升级成功率", "OTA成功率", "安装成功率"]
+
+  - name: avg_soh
+    description: 电池平均健康度，AVG(bat_soh_records.soh)，单位%
+    relevant_columns: ["bat_soh_records.soh"]
+    alias: ["平均SOH", "电池健康度", "SOH"]
+
+  - name: total_charging_kwh
+    description: 总充电电量，SUM(iot_charging_sessions.energy_kwh)，单位kWh
+    relevant_columns: ["iot_charging_sessions.energy_kwh"]
+    alias: ["充电电量", "总充电量", "充电度数"]
+
+  - name: energy_per_100km
+    description: 百公里能耗，SUM(energy_kwh)/SUM(distance_km)*100（iot_energy_daily）
+    relevant_columns: ["iot_energy_daily.energy_kwh"]
+    alias: ["百公里能耗", "能耗", "电耗"]
+
+  - name: trip_distance_total
+    description: 总行驶里程，SUM(iot_trip_records.distance_km)，单位公里
+    relevant_columns: ["iot_trip_records.distance_km"]
+    alias: ["总里程", "行驶里程", "总行驶里程"]
+
+  - name: disengagement_count
+    description: 智驾接管事件数量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["ad_disengagements.id"]
+    alias: ["接管次数", "接管数", "接管总数"]
+
+  - name: inventory_count
+    description: 经销商库存数量统计，使用 COUNT(*) 聚合
+    relevant_columns: ["sal_inventories.id"]
+    alias: ["库存量", "库存数", "在库数量"]
+
+  - name: avg_unit_cost
+    description: 平均单车成本，AVG(fin_vehicle_costs.total_cost)，单位元
+    relevant_columns: ["fin_vehicle_costs.total_cost"]
+    alias: ["单车成本", "平均成本", "单位成本"]
+
+  - name: nps_score
+    description: 服务满意度平均分，AVG(svc_customer_feedback.score)
+    relevant_columns: ["svc_customer_feedback.score"]
+    alias: ["满意度", "服务满意度", "平均满意度", "NPS"]

@@ -142,7 +142,7 @@ async def main(datasource: str, include_clean: bool, write: bool) -> int:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="从会话历史挖 badcase 进待审队列")
-    ap.add_argument("--datasource", default="rd_agent",
+    ap.add_argument("--datasource", default="auto_full",
                     help="数据源编码（历史里的 project 段不参与判定，必须显式指定）")
     ap.add_argument("--include-clean", action="store_true",
                     help="把「查成功但 0 行 / 被 LIMIT 截断」也算候选（噪声更大，默认关）")
