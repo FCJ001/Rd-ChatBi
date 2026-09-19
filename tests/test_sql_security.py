@@ -328,3 +328,40 @@ def test_param_oversized_string_rejected():
         role_rules=INJECTION_RULES, params={"dept_id": "x" * 300},
     )
     assert not ok
+
+
+# ══ 敏感列拦截的作用域（数据驱动 vs 旧版表级兜底）════════════════
+# 修复背景：hospital/ALM 的表级敏感正则曾无条件作用于所有数据源，
+# 对配置了 sensitive_columns 的数据源是无效计算且违背数据驱动设计。
+
+def test_sensitive_columns_configured_uses_ast_not_legacy_regex():
+    """配置了 sensitive_columns → AST 精确匹配生效，旧版粗正则不参与：
+    命中旧正则文本但不在配置名单里的列名，应当放行（口径由配置说了算）"""
+    # patient_name 命中旧 hospital 正则，但本数据源只配了 phone → 不拦
+    ok, _ = validate_sql(
+        "SELECT patient_name FROM outpatient_visits WHERE patient_phone = 'x' LIMIT 5",
+        sensitive_columns=["phone"],
+    )
+    assert ok
+    # 配置名单里的列 → AST 拦截（哪怕不在任何旧正则里）
+    ok, msg = validate_sql(
+        "SELECT secret_col FROM t LIMIT 5", sensitive_columns=["secret_col"],
+    )
+    assert not ok and "敏感" in msg
+
+
+def test_sensitive_columns_absent_falls_back_to_legacy_regex():
+    """未配置 sensitive_columns 的数据源 → 旧版表级兜底仍生效（向后兼容）"""
+    ok, _ = validate_sql(
+        "SELECT patient_name FROM outpatient_visits WHERE patient_phone = '138' LIMIT 5",
+    )
+    assert not ok
+    # ★ 旧正则是顺序敏感的（表名在前、敏感列在后才命中）——这是它不如
+    # AST 列引用匹配的地方，也是"配置了 sensitive_columns 就不该再用它"的又一论据
+    ok, _ = validate_sql(
+        "SELECT id FROM alm_issues WHERE reporter_phone = 'x' LIMIT 5",
+    )
+    assert not ok
+    # 不命中兜底正则的正常查询不受影响
+    ok, _ = validate_sql("SELECT COUNT(*) FROM alm_issues")
+    assert ok

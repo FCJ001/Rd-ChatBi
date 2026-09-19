@@ -12,7 +12,7 @@
 #
 # 图结构：
 #   extract_keywords
-#     → [recall_columns | recall_values | recall_metrics]（并行）
+#     → [recall_columns | recall_values | recall_metrics | recall_examples]（并行）
 #     → merge_info
 #     → [filter_tables | filter_metrics]（并行）
 #     → add_context → generate_sql → validate_sql
@@ -40,6 +40,7 @@ from src.nl2sql.nodes.filter_tables import filter_tables
 from src.nl2sql.nodes.generate_sql import generate_sql
 from src.nl2sql.nodes.merge_info import merge_info
 from src.nl2sql.nodes.recall_columns import recall_columns
+from src.nl2sql.nodes.recall_examples import recall_examples
 from src.nl2sql.nodes.recall_metrics import recall_metrics
 from src.nl2sql.nodes.recall_values import recall_values
 from src.nl2sql.nodes.validate_sql import validate_sql
@@ -66,6 +67,7 @@ NODES: dict[str, Callable] = {
     "recall_columns": recall_columns,
     "recall_values": recall_values,
     "recall_metrics": recall_metrics,
+    "recall_examples": recall_examples,
     "merge_info": merge_info,
     "filter_tables": filter_tables,
     "filter_metrics": filter_metrics,
@@ -83,7 +85,7 @@ def _has_fix_budget(state: DataAgentState) -> bool:
 
 PIPELINE_SPEC: tuple[Stage, ...] = (
     Stage("extract_keywords", ("extract_keywords",)),
-    Stage("parallel_recall", ("recall_columns", "recall_values", "recall_metrics")),
+    Stage("parallel_recall", ("recall_columns", "recall_values", "recall_metrics", "recall_examples")),
     Stage("merge_info", ("merge_info",)),
     Stage("parallel_filter", ("filter_tables", "filter_metrics")),
     Stage("add_context", ("add_context",)),
@@ -133,7 +135,7 @@ def build_graph() -> StateGraph:
     builder.add_edge(START, "extract_keywords")
 
     # 多条出边 = 并行分支；多条入边 = 汇聚（等待分支全部完成）
-    for name in ("recall_columns", "recall_values", "recall_metrics"):
+    for name in ("recall_columns", "recall_values", "recall_metrics", "recall_examples"):
         builder.add_edge("extract_keywords", name)
         builder.add_edge(name, "merge_info")
 

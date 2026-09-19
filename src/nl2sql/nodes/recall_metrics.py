@@ -11,6 +11,7 @@ from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
 from src.nl2sql.llm_text import safe_ainvoke
 from src.nl2sql.prompt_loader import load_prompt
+from src.core.metrics import RETRIEVAL_REQUESTS
 
 
 async def recall_metrics(state: DataAgentState, ctx: DataAgentContext) -> dict:
@@ -42,8 +43,13 @@ async def recall_metrics(state: DataAgentState, ctx: DataAgentContext) -> dict:
         # 向量检索：批量向量化（一次 HTTP 而不是每关键词一次）；
         # ★ aembed_* 走 executor、MilvusClient 是同步 SDK 用 to_thread 包一层 ——
         #   直接同步调用会阻塞整个事件循环，并发下所有请求互相卡
-        vecs = await embedding_model.aembed_documents(all_keywords)
+        try:
+            vecs = await embedding_model.aembed_documents(all_keywords)
+        except Exception:
+            RETRIEVAL_REQUESTS.labels(channel="metrics", status="failed").inc()
+            raise
         retrieved: dict[str, any] = {}
+        search_failures = 0
         for kw, vec in zip(all_keywords, vecs):
             try:
                 metrics = await asyncio.to_thread(repo.search, vec, top_k=5, threshold=0.6)
@@ -51,7 +57,12 @@ async def recall_metrics(state: DataAgentState, ctx: DataAgentContext) -> dict:
                     if m.id not in retrieved:
                         retrieved[m.id] = m
             except Exception:
+                search_failures += 1
                 continue
+        if search_failures:
+            RETRIEVAL_REQUESTS.labels(channel="metrics", status="failed").inc()
+        RETRIEVAL_REQUESTS.labels(
+            channel="metrics", status="ok" if retrieved else "empty").inc()
 
         from src.core.logger import logger
         logger.info(f"[recall_metrics] 扩展关键词={extra_keywords}, 向量检索命中 {len(retrieved)} 个指标")

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -27,17 +28,46 @@ _LANG_TAGS = ("json", "sql")  # 长的在前，避免 "json" 被 "js" 之类误�
 _CHARS_PER_TOKEN = 1.5
 
 
-def strip_code_fence(text: str) -> str:
-    """剥离 ```...``` 围栏和语言标签，返回纯内容。无围栏时原样返回（仅去首尾空白）。"""
-    text = text.strip()
+def clean_model_output(text: str) -> str:
+    """剥离围栏，再把围栏之外的散文去掉，只留 SQL本体。
+
+    ★ 为什么要去散文：「模型输出的是不是 SQL」靠首 token 判别，而前缀会骗人 ——
+      `以下 SQL：` / `这是查询：` / `-- 说明` / 围栏反引号，任何一个前缀都会把
+      一条合法 SQL 判成拒答（旧实现 `is_sql_text` 踩的就是这个，见 tests/
+      test_refusal_shortcircuit.py）。两种散文形态都要处理：
+      ① 围栏前/后各有一坨说明（常见）→ 取围栏内内容；
+      ② 没有围栏、SQL 前面垫了一行说明 → 从第一个 SELECT/WITH 起截。
+      判别与清洗在同一处收口，"什么是 SQL" 只有一个定义。
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
     if "```" not in text:
-        return text
+        return _cut_to_first_statement(text)
     block = text.split("```")[1]
     # 围栏内第一行可能是语言标签（```sql\nSELECT ...）
     first_line, _, rest = block.partition("\n")
     if first_line.strip().lower() in _LANG_TAGS:
         block = rest
-    return block.strip()
+    return _cut_to_first_statement(block.strip())
+
+
+# 语句起点：行首的 SELECT / WITH（前缀散文通常独占一行）。
+_MODEL_OUTPUT_START = re.compile(r"^(?:select|with)\b", re.IGNORECASE | re.MULTILINE)
+
+
+def _cut_to_first_statement(text: str) -> str:
+    """截到第一条语句的起点。★ 必须 `^` 锚行首 —— 不用 `\\b` 扫全文：
+    模型拒答「我不能生成删除数据的 SQL 语句。…我可以帮你生成一个查询所有
+    投诉记录的 SQL 语句」里就含 SELECT 字样，扫全文会把后半句人话当成 SQL。"""
+    m = _MODEL_OUTPUT_START.search(text)
+    return text[m.start():] if m else text
+
+
+def strip_code_fence(text: str) -> str:
+    """向后兼容别名（原语义：剥围栏 + 语言标签）。新版同时去围栏外散文，
+    见 clean_model_output。"""
+    return clean_model_output(text)
 
 
 def _text_of(message: Any) -> str:

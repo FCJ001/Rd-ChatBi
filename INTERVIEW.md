@@ -5,7 +5,7 @@
 > 📖 **HTML 版**（带渲染好的图，浏览器直接打开）：[INTERVIEW.html](INTERVIEW.html)
 > 🗣️ **面试前十分钟只看这份**：[SPEAK.md](SPEAK.md)（口述版速记，别背长文）
 >
-> 代码量：`src/` 约 5000 行，`tests/` 约 1700 行，90 条离线评测案例。116 个单测全绿，离线门禁 90/90。
+> 代码量：`src/` 约 7400 行，`tests/` 约 3200 行，**104 条分层评测案例**（auto_full 百表库 63 + hospital_demo 40 + 回流 1）。**245 个单测全绿，离线门禁 104/104。**
 
 ---
 
@@ -32,7 +32,7 @@
 
 「我做的这个项目叫 rd-chatBI，是一个 NL2SQL 智能分析平台。业务同学用自然语言提问，比如『各责任域的问题单数量排名』，系统自动生成 SQL、查库、返回数据表 + 图表 + 文字摘要。
 
-技术上有三个重点：一是用 LangGraph 编排了一条 9 阶段的 RAG 流水线，通过 **三层元数据召回**（向量库召回字段、ES 召回字段值、向量库召回指标）解决大模型不懂业务表结构的问题；二是设计了 **四层 SQL 安全防线**，用 sqlglot 在 AST 层做 SELECT-only 校验、LIMIT 钳制、行级权限注入，因为 LLM 生成的 SQL 本质是不可信输入；三是做了 **执行准确率评测门禁**，90 条分层案例跑进了 CI。」
+技术上有三个重点：一是用 LangGraph 编排了一条 9 阶段的 RAG 流水线，通过 **三层元数据召回**（向量库召回字段、ES 召回字段值、向量库召回指标）解决大模型不懂业务表结构的问题；二是设计了 **四层 SQL 安全防线**，用 sqlglot 在 AST 层做 SELECT-only 校验、LIMIT 钳制、行级权限注入，因为 LLM 生成的 SQL 本质是不可信输入；三是做了 **执行准确率评测门禁**，104 条分层案例跑进了 CI，其中离线门禁是纯函数、不连库，每条标准答案的 SQL 必须先过安全层。」
 
 ### 2 分钟版
 
@@ -40,8 +40,8 @@
 
 - **为什么不能用「把 schema 塞进 prompt」的朴素做法**：汽车/ALM 库有几十张表、几百个字段，全塞进去 prompt 超长、成本高、模型还容易选错表。所以走 RAG：先召回候选表和字段，再用 LLM 过滤到最小集合，最后才生成 SQL。
 - **为什么安全要单独做一层**：LLM 输出不可信，且用户会通过 prompt 注入诱导 LLM 写越权 SQL（比如「查所有责任域的数据」）。只靠 prompt 里写「不要查敏感字段」是不够的，必须代码层强校验。
-- **多数据源**：默认演示**汽车/ALM 研发平台**（`rd_agent`），另配一份医院演示库（`hospital_demo`）用来验证「同一份代码换一套角色模型」。按请求头 `X-Project-Id` 路由到不同的库、不同的向量 collection、不同的权限规则。
-- **效果**：90 条案例（两个数据源）全过安全门禁，有 exec-match 执行准确率评测。
+- **多数据源**：主数据源是**汽车全域百表库**（`auto_full`，127 张表），另配一份医院演示库（`hospital_demo`）用来验证「同一份代码换一套角色模型」。按请求头 `X-Project-Id` 路由到不同的库、不同的向量 collection、不同的权限规则。
+- **效果**：104 条案例（两个数据源）全过离线安全门禁，实况 exec-match 执行准确率按 `category × difficulty` 分层统计。
 
 ### 10 分钟版
 
@@ -86,7 +86,7 @@
 │     graph.astream  → pipeline.run_pipeline  → SSE
 │     graph.ainvoke  → run_nl2sql_graph       → 离线评测/批处理
 │
-├── 节点层 ── src/nl2sql/nodes/*.py（12 个节点）
+├── 节点层 ── src/nl2sql/nodes/*.py（13 个节点，含 P1 新增 recall_examples）
 │
 ├── 安全部 ── src/nl2sql/security.py ★
 ├── 可选件 ── ctx_store.py（对话历史 redis/memory）
@@ -173,7 +173,7 @@ flowchart TB
     subgraph STORE["存储分工"]
         direction LR
         S1[("PostgreSQL<br/>rd_chatbi 元数据<br/>chatbi_demo 业务库·只读")]
-        S2[("Milvus<br/>chatbi_columns<br/>chatbi_metrics<br/>语义检索")]
+        S2[("Milvus<br/>chatbi_{prefix}_columns<br/>chatbi_{prefix}_metrics<br/>chatbi_{prefix}_examples<br/>语义检索 + few-shot 示例")]
         S3[("Elasticsearch<br/>chatbi_{prefix}_values<br/>真实枚举值 + 同义词")]
     end
 
@@ -198,14 +198,15 @@ flowchart TB
 
     N1["① extract_keywords　【纯 CPU】<br/>jieba TF-IDF + 词性白名单 topK=10<br/>原句插到首位兜底"]
 
-    subgraph RECALL["② 三路并行召回（各写 state 不同 key，互不冲突）"]
+    subgraph RECALL["② 四路并行召回（各写 state 不同 key，互不冲突）"]
         direction LR
-        N2A["②a recall_columns<br/>【LLM】扩展关键词<br/>→【Embedding】批量向量化<br/>→【Milvus】chatbi_columns<br/>top_k=5, threshold=0.6"]
+        N2A["②a recall_columns<br/>【LLM】扩展关键词<br/>→【Embedding】批量向量化<br/>→【Milvus】chatbi_{prefix}_columns<br/>top_k=5, threshold=0.6"]
         N2B["②b recall_values<br/>【LLM】扩展关键词<br/>→【ES】两步检索<br/>①命中词找到列 ②带回该列真实值<br/>size=10"]
-        N2C["②c recall_metrics<br/>【LLM】扩展关键词<br/>→【Embedding】批量向量化<br/>→【Milvus】chatbi_metrics<br/>top_k=5, threshold=0.6"]
+        N2C["②c recall_metrics<br/>【LLM】扩展关键词<br/>→【Embedding】批量向量化<br/>→【Milvus】chatbi_{prefix}_metrics<br/>top_k=5, threshold=0.6"]
+        N2D["②d recall_examples<br/>【Embedding】问题向量化<br/>→【Milvus】chatbi_{prefix}_examples<br/>相似问答对 top_3（few-shot）<br/>剔除同题防评测自泄漏"]
     end
 
-    N3["③ merge_info　【PG】<br/>★三条入边 = 自动等待全部完成<br/>从指标定义反查 relevant_columns<br/>补全量列 + 主键/外键（JOIN 必需）<br/>把召回的值挂到列的 examples<br/>冷启动兜底：一无所获 → 回退全量表"]
+    N3["③ merge_info　【PG】<br/>★**四条**入边 = 自动等待全部完成<br/>从指标定义反查 relevant_columns<br/>补全量列 + 主键/外键（JOIN 必需）<br/>把召回的值挂到列的 examples<br/>冷启动兜底：一无所获 → 回退全量表"]
 
     subgraph FILTER["④ 两路并行过滤"]
         direction LR
@@ -338,7 +339,7 @@ sequenceDiagram
 conf/projects/hospital_demo.yaml
    │
    ├─→ PG    nl2sql_table / nl2sql_column / nl2sql_metric   （权威元数据，含主外键、别名）
-   ├─→ Milvus chatbi_columns / chatbi_metrics               （语义检索，text-embedding-v3）
+   ├─→ Milvus chatbi_{prefix}_columns / _metrics / _examples （语义检索 + few-shot 示例，text-embedding-v3）
    └─→ ES    chatbi_{prefix}_values                          （真实枚举值 + 同义词；解决「未关闭」↔'closed' 这类对不上）
 ```
 
@@ -445,7 +446,7 @@ all_keywords = list(dict.fromkeys(keywords + extra_keywords))   # 两路合并�
 ```
 START
  → ① extract_keywords          jieba TF-IDF + 词性过滤 抽关键词
- → ② [recall_columns ‖ recall_values ‖ recall_metrics]   ★三路并行
+ → ② [recall_columns ‖ recall_values ‖ recall_metrics ‖ recall_examples]  ★四路并行
  → ③ merge_info                补 PK/FK、按表分组、值挂到列的 examples
  → ④ [filter_tables ‖ filter_metrics]                    ★两路并行
  → ⑤ add_context               注入当前日期/季度/DB 版本
@@ -461,7 +462,7 @@ START
 | 阶段 | 解决什么问题 | 关键设计 |
 |---|---|---|
 | ① 关键词 | LLM 全量语义检索成本高 | 先用 jieba 抽 10 个关键词，**零成本、零延迟**（启动时预热词典） |
-| ② 三路召回 | 单一检索通道覆盖不全 | **三种元数据用三种存储**：列/指标走向量语义，字段值走 ES（同义词负责找到列、真实值负责给出合法取值） |
+| ② 四路召回 | 单一检索通道覆盖不全 | **四种元数据用三种存储**：列/指标/示例走向量语义，字段值走 ES（同义词负责找到列、真实值负责给出合法取值）；示例库是 P1 加的，把评测集 golden 和审核过的 badcase 变成在线 few-shot |
 | ③ 合并 | 单列召回了但表结构不完整 | 从指标的定义反查它的相关列；补齐主外键（JOIN 必需）；值挂到列的 `examples` |
 | ④ 过滤 | 候选太多 prompt 太长 | LLM 选最小集合，**失败降级保留全量**（不因一次 LLM 抽风就挂） |
 | ⑤ 上下文 | LLM 不知道「今天」 | 注入 date/weekday/quarter，否则「上个月」算不出来 |
@@ -470,13 +471,13 @@ START
 | ⑧ 纠错 | 第一次就写对概率不高 | LLM 拿 DB 报错修，**修完必须回 ⑦ 复检**（纠错产物同样是 LLM 输出） |
 | ⑨ 执行 | — | 只读事务 + timeout + 结果列过滤 |
 
-### 为什么「三路并行 + 两路并行」
+### 为什么「四路并行 + 两路并行」
 
-三路召回彼此独立（分别查 Milvus/ES/Milvus），串行跑浪费 RTT。LangGraph 里**多条出边 = 并行分支，多条入边 = 汇聚点**（自动等待所有分支完成）：
+四路召回彼此独立（分别查 Milvus / ES / Milvus / 示例库），串行跑浪费 RTT。LangGraph 里**多条出边 = 并行分支，多条入边 = 汇聚点**（自动等待所有分支完成）：
 
 ```python
 # src/nl2sql/graph.py:136
-for name in ("recall_columns", "recall_values", "recall_metrics"):
+for name in ("recall_columns", "recall_values", "recall_metrics", "recall_examples"):
     builder.add_edge("extract_keywords", name)
     builder.add_edge(name, "merge_info")
 ```
@@ -710,7 +711,7 @@ columns, rows = filter_result_columns(columns, rows, ctx.get("sensitive_columns"
 ### 路由链路
 
 ```
-X-Project-Id: rd_agent
+X-Project-Id: auto_full
    ↓ get_current_user → UserContext
    ↓ get_datasource(code) → DataSourceConfig（DSN / milvus_prefix / es_prefix / role_rules / sensitive_columns）
    ↓ dw_session_factory(code) → 只读 AsyncSession
@@ -725,7 +726,7 @@ X-Project-Id: rd_agent
 
 | code | 库 | 场景 |
 |---|---|---|
-| `rd_agent`（默认） | rd_agent | ALM 研发平台（问题单/变更/需求/配置项，含 VIN、DTC 故障码），角色：admin / engineer（按责任域）/ business（按业务线）/ aftersales |
+| `auto_full`（默认） | auto_full | 汽车全域 127 张表 / 13 子域（销量、售后、生产、智驾、电池、质量…），角色：admin / engineer（按工厂 plant_id）/ sales（按大区 region_id）/ customer |
 | `hospital_demo` | chatbi_demo | 医院门诊/住院运营（第二数据源，用来演示换一套角色模型），角色：admin / doctor（按科室）/ cashier / patient |
 
 同一套代码支撑两个完全不同的业务域，**只是换了一份 yaml**。
@@ -830,7 +831,7 @@ python eval/run_nl2sql_eval.py --live   # 实况：需 LLM + 业务库，跑 exe
 1. 案例结构完整（id 唯一、分类/难度合法）
 2. **每条 golden SQL 必须能通过安全层**
 
-第 2 条很关键 —— golden 被安全层拒绝只有两种可能：案例本身写错，或**安全层误伤合法查询**。两者都是必须拦在 CI 里的回归。这条门禁一跑就跑 90 条，等于给 `security.py` 加了一组强约束：任何收紧规则的改动，如果误伤了合法查询，CI 立刻红。
+第 2 条很关键 —— golden 被安全层拒绝只有两种可能：案例本身写错，或**安全层误伤合法查询**。两者都是必须拦在 CI 里的回归。这条门禁一跑就是全部案例，等于给 `security.py` 加了一组强约束：任何收紧规则的改动，如果误伤了合法查询，CI 立刻红。
 
 **实况模式（exec-match 执行准确率）**：不看 SQL 文本像不像，而是**看结果集等不等价**：
 
@@ -846,7 +847,7 @@ def normalize_rows(rows, precision=4):
 
 按 `category × difficulty` 出分层统计，默认门限 80%。
 
-**案例分层**：rd_agent 50 条（单表聚合 9 / 分组统计 9 / 时间窗口 9 / 多表 JOIN 8 / 明细查询 8 / 排序 TopN 7；easy 14 / medium 21 / hard 15）+ hospital_demo 40 条（单表聚合 9 / 分组统计 8 / 时间窗口 8 / 排序 TopN 5 / 多表 JOIN 5 / 明细查询 5；easy 7 / medium 19 / hard 14）。
+**案例分层**（实测计数）：auto_full **63 条**（多表 JOIN 26 / 时间窗口 13 / 分组统计 7 / 排序 TopN 7 / 单表聚合 6 / 明细查询 4）+ hospital_demo **40 条**（单表聚合 9 / 分组统计 8 / 时间窗口 8 / 多表 JOIN 5 / 排序 TopN 5 / 明细查询 5），另有 1 条 badcase 回流案例。**两个数据源合计 104 条过离线门禁。**
 
 ### 7.5 CI / 部署
 
@@ -870,7 +871,7 @@ Docker：应用非 root 运行（uid 10001）、带 healthcheck（slim 镜像无
 **答**：因为流程是**确定性的**，不是 agent 自主决策。每一步做什么、什么条件下走纠错回环，都是设计好的。用 Agent 让 LLM 自己决定调哪个工具，反而不可控、不可测。
 
 那为什么不用函数串？三个理由：
-1. **并行编排**：三路召回、两路过滤，LangGraph 声明式表达（多出边=并行、多入边=汇聚），自己写 asyncio.gather 也能做但状态合并要手写
+1. **并行编排**：四路召回、两路过滤，LangGraph 声明式表达（多出边=并行、多入边=汇聚），自己写 asyncio.gather 也能做但状态合并要手写
 2. **条件路由 + 回环**：纠错回环和预算控制，用图表达比手写 while 循环清晰
 3. **双执行器同源**：`astream`（流式）和 `ainvoke`（一次性）共用同一张编译图，线上和评测跑的是同一套逻辑
 
@@ -994,9 +995,61 @@ system_prompt = system_prompt.replace("{query}", state["query"])   # 用户输�
 | `bi_datasources.dsn` 与 yaml 里**明文口令** | 凭据泄露风险 | 接密钥管理服务（Vault / K8s Secret） |
 | `AUTH_MODE=header` 依赖网关剥离身份头 | 配错就是任意伪造 admin | 生产强制切 JWT（代码已支持） |
 | 元数据库 schema 与业务库有**双写同步**问题 | 业务库表结构变了元数据不自动跟进 | 定时比对 + 变更告警 |
-| 缓存写死"PostgreSQL 16" | 换库要改代码 | 从连接实际探测 |
-| 评测集只有 50 条、单一数据源为主 | 覆盖度有限 | **已补**：见 9.1 |
+| 缓存写死"PostgreSQL 16" | ~~换库要改代码~~ **已解决** | `add_context.detect_db_info` 从连接实际探测，方言贯通到安全层 |
+| 评测门禁只有一个总分门限 | ~~某一类全错会被平均掩盖~~ **已解决** | `check_layer_gates` 按 `(数据源, 类别)` 设门限，见 9.2 |
+| 评测判分器在部分题上**没有唯一答案** | 分数系统性偏低且不可归因 | 三态判定 + 案例 lint（见 9.2） |
+| 判分器**在挑模型的输出格式** | 答对却判错（多给一列 / 日期格式化不同） | 列子集匹配 + 日期归一化（见 9.2） |
+| ~~题库不够难~~ **已补**：2 跳以上 JOIN 从 4 条(9%) 提到 23 条(33%)，总体 81%→**78%** | **原来那个 81% 是题太浅撑出来的** | 明细查询 25%、多表 JOIN 69% 是当前真实短板 |
+| 种子数据数值列**太稀疏**（`labor_hours` 4 万行只有 75 个值） | 「按数值排序取前 N」在数学上无唯一答案，13 条题因此删除 | 已避开这类形态；`gen_auto_full_cases.py` 里写明了不能重犯 |
+| 判分容差挡不住模型主动 `ROUND()` | `AUF41` 模型输出 `0.05` vs golden `0.04921` | 待定：加相对容差还是改判据 |
+| `recall_examples` 等召回路的**静默降级** | 向量服务挂了与"没命中"在监控上一样 | ~~已解决~~ `RETRIEVAL_REQUESTS` 按 ok/empty/failed 打点 |
 | 图表推荐是 LLM 单次决策，无校验 | 可能推荐不适合的图型 | 加规则兜底（分类数>10 不推饼图等） |
+
+### 9.2 评测判分器本身出过错 —— 而且是**四类**问题（这段最值得讲，因为它证明你会怀疑自己的度量）
+
+实况跑 auto_full 41 题时，**明细查询一类 6 题全军覆没**。我以为是大模型不会写明细 SQL，下钻到数据库才发现：**是判分器在问一个没有唯一答案的问题。**
+
+**问题一：golden 的"最近 N 条"没有 tie-breaker。**
+`AUF33`「列出最近 10 条致命级别的研发缺陷问题单」——我查了下，它筛出 4000 行候选，而**最新时间戳上并列 11 行**，golden 只取 10。哪 10 条是**任意的**。我的判分器对行序不参与比较（集合语义，这是对的），于是模型写出一条语义完全正确的 SQL、取到另一个合法子集，却被判 ✗。
+
+**问题二：golden 带 LIMIT 却没有 ORDER BY。**
+`AUF36`/`AUF37` 的 golden 是「列出比亚迪在库整车明细」+ `LIMIT 20`——**这句话本身没有排序语义**，20 行是任意的。而系统侧 `security.validate_sql` 会把 LIMIT 钳到 100，模型返回 100 行。**两边拿两个合法子集互比。**
+
+**问题三：判分器和被测系统口径不一致。**
+golden 是用**原始未钳制的 SQL** 跑的，而预测 SQL 是**过了安全层、LIMIT 被钳过**的。`AUF28` 的 golden 返回 336 行（系统最多 100 行）——**这条 golden 自己都过不了自己的门禁**。正确做法是：golden 必须以「合法用户能提交的查询」形态存在，它自己得先过安全层。
+
+**问题四：判分器在挑模型的输出格式。** 修完上面三条、拿真 LLM 重跑之后才发现这一类，而且它比前三条更根本 —— **模型答对了却输在"格式不像标准答案"**：
+
+| 案例 | golden | 模型 | 数值 | 为什么被判错 |
+|---|---|---|---|---|
+| `AUF40` 上月 vs 上上月充电次数差 | `{diff: 0}`（1 列） | `{上月:7728, 上上月:7728, diff:0}`（3 列） | **全对** | 旧实现把一行内的值排序成一个元组，**丢掉了列结构**，多给一列就判不等 |
+| `AUF22` 今年以来每月交付量 | 月份是 `datetime` | 月份是 `'2026-01'` 字符串 | **9 个月逐个相同** | `str(datetime)` = `"2026-01-01 00:00:00+00:00"` ≠ `"2026-01"`。**模型把月份格式化得更规范，反而被判错** |
+
+**怎么修的**（五处，都有回归测试）：
+
+1. **判分改成三态**（`classify_results`）：完全相等 → `exact`；两侧构成**真子集关系**且都非空 → `ambiguous`（判分器无唯一答案，**不计分子也不计分母**）；其余 → `mismatch`。关键反例写进了测试：`golden=[0..9]`、`pred=[5..14]` 有交集但互不包含 → **必须判 `mismatch`**，否则「有重叠就放行」等于放弃判分。
+2. **空集不豁免**：空集是任何集合的子集，但它该走「golden 返回空集」的既有告警，不能被静默放过。
+3. **案例质量 lint 进离线门禁**：扫出「golden 带 LIMIT 但无 ORDER BY」的案例并点名（实测命中 4 条（auto_full 的 AUF34/36/37 与 N142））。**是 lint 不是失败**——这是案例质量问题不是安全回归，阻断 CI 会把无关改动也卡住；但也不能沉默，**沉默正是它藏了这么久的原因**。
+4. **列子集匹配**：改成逐行一对一匹配（带回溯，消耗式 —— 不能用"每行各找一个"的贪心，那会让 pred 的一行被 golden 的多行重复认领）。golden 的每一列值都能在 pred 那行里找到即可，**列名不参与比较**（模型的别名与 golden 不同是常态），pred 多出的列不影响判定。
+5. **日期等价归一化**：**带时间部分的 TIMESTAMP** 零点（`date_trunc` 产物）归到月，`2026-01-01 00:00:00` = `2026-01`。边界卡得很紧：**纯 `"2026-01-01"` 字符串不缩**（那就是 PG DATE 列的形态，缩了会让「1 月 1 日」和「整个 1 月」混淆）；日不是 01 保留到日；不同年月一律不等价。
+
+**这五条修完，分数从 59% 涨到 78%。** 那 19 个点里大部分不是模型变强，是**判分器不再挑格式**了（明细 0%→50%、排序TopN 33%→67%、easy 73%→100%）。
+
+**这段为什么是加分项**：它同时说明三件事——我有能发现它的测试、我会下钻到数据库找真因而不是甩锅给模型、**我怀疑自己的度量**。绝大多数候选人只会说「我的准确率是 X%」，不会说「我怀疑我这个 X%」，更不会说「我的判分器在挑模型的输出格式」。
+
+**配套做了分层门限**（`check_layer_gates`）：总分过了不代表各类都能用 —— 单一门限会把「某一类完全不可用」平均掉。按 `(数据源, 类别)` 声明 `expect` / `min_n` / `reason`，**首版一律 `expect=1.0` 不放宽**：先把「哪一类漏水」变成 CI 里可见的事实，而不是调低门限让它变绿。实测输出：
+
+```
+✗ 分层门限未达标（总分合格不代表各类都可用）：
+    auto_full/多表JOIN: 5/7 = 71% < 分层门限 100%
+    auto_full/排序TopN: 4/6 = 67% < 分层门限 100%
+    auto_full/时间窗口: 7/9 = 78% < 分层门限 100%
+    auto_full/明细查询: 3/6 = 50% < 分层门限 100%
+```
+
+（单表聚合、分组统计两组 100% 不告警 —— 门禁只报真短板，不报噪音。`min_n=3` 防止小样本抖动当信号。）
+
+> **立门禁时踩的坑**：第一版用排除法过滤 `"/" not in k` 来挑出「类别」键，结果 **`easy`/`medium`/`hard` 全被当成了类别**，按 100% 门限报一堆假失败（英文难度键本身不含 `/`，排除法挡不住）。改成**正面白名单**——从案例文件里读真实 `category` 集合。两个教训：难度是「题有多难」的描述，不是「功能是否可用」的判据；以及**排除法在白名单场景下总是更脆**。
 
 ### 9.1 已解决（讲这段能体现「闭环」）
 
@@ -1007,7 +1060,7 @@ system_prompt = system_prompt.replace("{query}", state["query"])   # 用户输�
 | 对话上下文是**进程内存** | `ctx_store.py` 双后端：`CONVERSATION_BACKEND=redis` 跨 worker 共享 + **带 TTL**（不设 TTL 等于给可伪造的 user_id 开放无上限写入口）；Redis 挂了降级进程内（**fail-open**，多轮理解变弱但不影响查询本身） | 历史里**不存结果行**（每轮最多 100 行），只存 question/sql/summary |
 | PG 用 `NullPool` | `infra/pool.py` **按 event loop 分区池化**：`pool_size=5, max_overflow=10`，同 loop 复用、跨 loop 隔离 | 见下方「实测结论」 |
 | 熔断器指标定义了没人 inc | `core/circuit_breaker.py` + `llm_text.safe_ainvoke` 收口所有 LLM 调用；`circuit_breaker_state_changes_total` 真正接线 | 取消（客户端断连）**不算故障**，否则一次断连就把熔断打开 |
-| 评测集只覆盖 rd_agent | 补 40 条 hospital_demo 案例（`scripts/make_hospital_cases.py` 生成并逐条真跑校验），评测器改成**按数据源聚合**（`--project all` 默认），离线门禁从 50 → **90 条** | 见下方「评测集那段」 |
+| 评测集只覆盖单一数据源 | 补 40 条 hospital_demo 案例（`scripts/make_hospital_cases.py` 生成并逐条真跑校验），评测器改成**按数据源聚合**（`--project all` 默认） | 见下方「评测集那段」 |
 
 **连接池那段的实测结论（面试加分项）**：网上都说「asyncpg 连接绑 event loop，所以要 NullPool」。我实测了边界——
 
@@ -1020,13 +1073,13 @@ system_prompt = system_prompt.replace("{query}", state["query"])   # 用户输�
 
 顺带解决的一个【原技术债】：启动时把字段别名/指标名注册进 **jieba 用户词典**（`dict_loader.py`，实测 158 个业务词）。之前 `未关闭的严重问题单` 会被切成 `关闭`（语义反了），现在业务词不会被切错。
 
-**评测集那段（这块最能聊「评测设计的陷阱」）**：原来 50 条案例我扫了一遍 golden SQL 里的表名，**全部打在 rd_agent 上**——默认演示数据源 hospital_demo 是零覆盖的，于是补了 40 条。
+**评测集那段（这块最能聊「评测设计的陷阱」）**：原来 50 条案例我扫了一遍 golden SQL 里的表名，**全部打在同一个数据源上**——另一个数据源是零覆盖的，于是补了 40 条。
 
 补的过程中撞到三个坑，每个都是「评测看起来在跑、其实没在测」：
 
 1. **相对时间窗口 ↔ 数据区间脱节**。我一开始写的是「最近 30 天的问题单数」，结果全返回 0 行——demo 数据是 2025-09-09 ~ 2026-09-08 的滚动一年，而跑的这天是 2026-09-13，**已经超出数据上界**。空结果集的案例是**有害**的：任何同样返回空集的 SQL（包括完全写错的）都会被 exec-match 判为通过。改成固定日期区间，并且给校验脚本加了「窗口案例必须命中 > 0 条」的断言。
 2. **一条失败污染后面全部**。校验时第一条 SQL 报错后，剩下的全报 `InFailedSQLTransactionError` 而不是真原因——PG 事务进了 aborted 态，必须逐条 `rollback()`。这就是本项目 `execute_sql` 节点里那条 `await db.rollback()` 注释说的同一件事，这次是在脚本里踩到了。
-3. **CI 能不能诚实跑**. rd_agent 的建表 DDL 属于兄弟仓库，我要是在本仓库伪造一份，就会跟真实 schema 漂移、制造假通过。所以 CI 只跑**本仓库能从零建出来**的 hospital_demo（`init_demo_data.py` → `make_hospital_cases.py`），rd_agent 的实况校验留在本地/部署环境。
+3. **CI 能不能诚实跑**. 有个数据源的建表 DDL 属于兄弟仓库（那个数据源后来被我删了，原因见下），我要是伪造一份就会跟真实 schema 漂移、制造假通过。所以 CI 只跑**本仓库能从零建出来**的 hospital_demo（`init_demo_data.py` → `make_hospital_cases.py`）——**这条原则现在仍然成立**。
 
 
 
@@ -1044,6 +1097,7 @@ system_prompt = system_prompt.replace("{query}", state["query"])   # 用户输�
 - [ ] 能解释 fail-closed 的四个位置
 - [ ] 能解释 `filter_result_columns` 为什么必须在 `generate_summary` 之前
 - [ ] 能解释 exec-match 为什么不比 SQL 文本比结果集，以及归一化了什么
+- [ ] 能解释**判分器为什么会问出没有唯一答案的问题**（LIMIT + 无 tie-breaker），以及三态判定里 `ambiguous` 与 `mismatch` 的界线
 - [ ] 能解释 LangGraph 那个 hang 的误判和真因
 - [ ] 能解释「建 engine 与 loop 无关、连接绑 loop」这个实测结论，以及为什么隔离粒度是池
 - [ ] 能解释熔断器为什么「取消不算故障」、半开态为什么只放一个探针
@@ -1053,7 +1107,7 @@ system_prompt = system_prompt.replace("{query}", state["query"])   # 用户输�
 **能跑的命令**（面试时可现场演示）：
 
 ```bash
-.venv/bin/python -m pytest -q                    # 116 passed
-.venv/bin/python eval/run_nl2sql_eval.py         # 离线门禁 90/90（rd_agent 50 + hospital_demo 40）
+.venv/bin/python -m pytest -q                    # 245 passed, 1 skipped
+.venv/bin/python eval/run_nl2sql_eval.py         # 离线门禁 104/104（auto_full 63 + hospital_demo 40 + 回流 1）
 uvicorn src.main:app --port 8003                 # 起服务，/docs 有交互文档
 ```

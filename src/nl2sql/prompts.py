@@ -28,13 +28,13 @@ inpatient_records（住院记录）:
   status VARCHAR(10),  -- in_treatment/discharged/settled
   created_at TIMESTAMP"""
 
-NL2SQL_SYSTEM_PROMPT = """你是医院运营数据分析专家。根据用户的自然语言问题，生成 PostgreSQL 查询语句。
+NL2SQL_SYSTEM_PROMPT = """你是资深业务数据分析师。根据用户的自然语言问题，生成 {dialect} 查询语句。
 
 {schema}
 
 ## 安全规则
 1. 只允许一条 SELECT 语句。★ 禁止用分号拼接多条查询；如果问题含多个子问题，只针对其中一个可查询意图生成
-2. 禁止查询任何个人身份字段（患者姓名/电话/证件号等敏感字段已从 schema 中移除）
+2. 禁止查询任何个人身份字段（敏感字段已从 schema 中移除，写出来的查询会被拦截）
 3. 必须包含 LIMIT（用户指定条数除外，默认 100）
 4. 子查询嵌套不超过 2 层
 

@@ -22,6 +22,7 @@
 
 import re
 from collections.abc import Collection
+from dataclasses import dataclass
 
 import sqlglot
 import sqlglot.expressions as exp
@@ -29,8 +30,17 @@ import sqlglot.expressions as exp
 # 旧版兜底规则：数据源未配置 sensitive_columns 时仍生效（向后兼容）。
 # 新数据源应把敏感列配到 conf/projects/{code}.yaml 的 datasource.sensitive_columns，
 # 走 validate_sql 的动态拦截（见 SENSITIVE 检查），不再改这里。
+# 通用文本拦截（所有数据源恒生效）：写操作关键字
 FORBIDDEN_PATTERNS = [
     re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b", re.IGNORECASE),
+]
+
+# 旧版兜底（向后兼容）：数据源【未配置】sensitive_columns 时才生效的表级敏感正则。
+# ★ 配置了 sensitive_columns 的数据源走 AST+文本双层精确匹配，不再评估这两条
+#   粗正则 —— 把 hospital/ALM 的表名列名硬编码在全局安全层，对其它数据源
+#   是无效计算，也违背"敏感列数据驱动"的设计。
+#   删除前提：所有存量数据源都配了 sensitive_columns 并重跑过 build 注册落库。
+_LEGACY_SENSITIVE_PATTERNS = [
     re.compile(r"\b(outpatient_visits|inpatient_records)\b[^;]*\b(patient_name|patient_phone|id_card|patient_no)\b", re.IGNORECASE),
     re.compile(r"\balm_issues\b[^;]*\b(reporter_phone|vin|customer_name)\b", re.IGNORECASE),
 ]
@@ -55,6 +65,30 @@ FORBIDDEN_FUNCTIONS = frozenset({
     "lo_import", "lo_export", "lo_get", "lo_put", "lo_creat", "lo_create", "lo_unlink",
 })
 FORBIDDEN_FUNCTION_PREFIXES = ("dblink", "pg_advisory")
+
+# 方言级黑名单：解析方言跟随数据源后（P0），危险函数也按方言叠加 ——
+# "合法 SELECT 带副作用"的函数各族方言不同，PG 清单拦不住 MySQL/duckdb 的越权读。
+# 只叠加不删减：换方言时 PG 函数名单仍生效（防御纵深）。
+DIALECT_FORBIDDEN_FUNCTIONS: dict[str, frozenset] = {
+    "mysql": frozenset({
+        "load_file",            # 读服务端文件
+        "sleep", "benchmark",   # 资源放大 / 时序盲注
+        "get_lock", "release_lock", "is_free_lock", "is_used_lock",
+        "sys_exec", "sys_eval", # lib_mysqludf_sys 系 UDF
+    }),
+    "duckdb": frozenset({
+        "read_csv", "read_csv_auto", "read_parquet", "parquet_scan",
+        "read_json", "read_json_auto",  # 任意文件读
+        "glob",
+    }),
+    "sqlite": frozenset({"load_extension", "readfile", "writefile"}),
+    "tsql": frozenset({"openrowset", "opendatasource", "openquery"}),
+    "oracle": frozenset({"dbms_random"}),
+}
+DIALECT_FORBIDDEN_PREFIXES: dict[str, tuple] = {
+    "tsql": ("xp_",),      # xp_cmdshell 一族
+    "oracle": ("utl_",),   # utl_file 一族
+}
 
 # 列名（含 table.column 形式）合法标识符 —— role_rules 配置也当不可信输入校验
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -186,10 +220,13 @@ def _references_sensitive_column(tree: exp.Expression, names: Collection[str]) -
     return any(col.name.casefold() in blocked for col in tree.find_all(exp.Column))
 
 
-def _forbidden_function_name(tree: exp.Expression) -> str | None:
+def _forbidden_function_name(tree: exp.Expression, dialect: str = "postgres") -> str | None:
     """AST 层危险函数检查。PG 的非内置函数在 sqlglot 里解析为
     exp.Anonymous（node.name 即函数名），内置安全函数（COUNT/SUM…）
-    是具名 Func 类，天然不在黑名单里。命中返回函数名，未命中返回 None。"""
+    是具名 Func 类，天然不在黑名单里。命中返回函数名，未命中返回 None。
+    dialect 额外叠加方言黑名单（DIALECT_FORBIDDEN_FUNCTIONS）。"""
+    blocked = FORBIDDEN_FUNCTIONS | DIALECT_FORBIDDEN_FUNCTIONS.get(dialect, frozenset())
+    prefixes = FORBIDDEN_FUNCTION_PREFIXES + DIALECT_FORBIDDEN_PREFIXES.get(dialect, ())
     for node in tree.walk():
         name: str | None = None
         if isinstance(node, exp.Anonymous):
@@ -199,9 +236,9 @@ def _forbidden_function_name(tree: exp.Expression) -> str | None:
         if not name:
             continue
         norm = name.casefold().strip('"')
-        if norm in FORBIDDEN_FUNCTIONS:
+        if norm in blocked:
             return name
-        if any(norm.startswith(p) for p in FORBIDDEN_FUNCTION_PREFIXES):
+        if any(norm.startswith(p) for p in prefixes):
             return name
     return None
 
@@ -209,8 +246,12 @@ def _forbidden_function_name(tree: exp.Expression) -> str | None:
 def validate_sql(
     sql: str,
     sensitive_columns: Collection[str] | None = None,
+    dialect: str = "postgres",
 ) -> tuple[bool, str]:
     """校验 SQL 安全性。返回 (is_valid, validated_sql_or_error)
+
+    dialect: sqlglot 方言（postgres/mysql/duckdb…），由调用方从业务库连接推断后传入；
+    解析与回写用同一方言，避免"用 PG 方言解析 MySQL 语法"造成的误判/失真。
 
     用 sqlglot 做语句级解析，彻底替代 startswith("SELECT")：
     - ★ 强制单条语句：asyncpg prepared statement 不支持多命令，且多语句是注入面。
@@ -231,7 +272,7 @@ def validate_sql(
         return False, "SQL 为空"
 
     try:
-        statements = sqlglot.parse(stripped, dialect="postgres")
+        statements = sqlglot.parse(stripped, dialect=dialect)
     except Exception:
         return False, "SQL 解析失败"
     if not statements:
@@ -253,10 +294,16 @@ def validate_sql(
             return False, "查询包含禁止的操作或字段"
 
     if sensitive_columns:
+        # 配置了敏感列 → AST 精确匹配（列引用级），旧版粗正则不参与
         if _references_sensitive_column(tree, sensitive_columns):
             return False, "查询包含敏感字段，已被拦截"
+    else:
+        # 未配置 sensitive_columns 的数据源 → 旧版表级兜底正则
+        for pattern in _LEGACY_SENSITIVE_PATTERNS:
+            if pattern.search(comment_free):
+                return False, "查询包含禁止的操作或字段"
 
-    func = _forbidden_function_name(tree)
+    func = _forbidden_function_name(tree, dialect)
     if func:
         return False, f"查询包含不允许调用的函数 {func}"
 
@@ -264,7 +311,31 @@ def validate_sql(
     if tree.args.get("limit") is None:
         tree.set("limit", exp.Limit(expression=exp.Literal.number(MAX_ROW_LIMIT)))
 
-    return True, _fix_sqlglot_output(tree.sql(dialect="postgres"))
+    return True, _fix_sqlglot_output(tree.sql(dialect=dialect))
+
+
+@dataclass(frozen=True)
+class RoleFilterResult:
+    """行级过滤结果。
+
+    ★ 为什么需要第三个状态（filtered）：仅靠 allowed + SQL 无法区分
+      「业务上真的没有数据」和「行级权限把它滤掉了」—— 两者都是 0 行。
+      实测后果：engineer 查 plant_id=7（授权 3），行权注入 plant_id=7 AND
+      plant_id=3 得到 0 行，摘要却告诉用户「该工厂暂无整车明细数据，可能未接入」
+      —— 既是**信息泄露**（能推断某个域存不存在），又会让人去报一个假的数据
+      缺失工单。必须把"被权限过滤"这个事实一路传到摘要。
+    """
+    allowed: bool
+    sql: str                 # 允许时是改写后的 SQL；拒绝时是拒绝原因
+    filtered: bool = False   # True = 已注入行级条件（结果为空可能是被过滤，而非真的没数据）
+
+    def __iter__(self):
+        """支持 `allowed, sql = ...` 解包。
+
+        ★ 保留元组解包是为了不惊动 20 处既有调用点与测试；但**新代码应该
+          用属性访问** —— filtered 这个新状态正是靠属性才拿得到，继续解包
+          就等于主动丢掉它（那正是本次要修的缺陷）。"""
+        return iter((self.allowed, self.sql))
 
 
 def apply_role_filter(
@@ -272,9 +343,9 @@ def apply_role_filter(
     role: str,
     role_rules: dict | None = None,
     params: dict | None = None,
-) -> tuple[bool, str]:
+) -> RoleFilterResult:
     """
-    数据驱动的角色行级过滤。返回 (allowed, modified_sql)。
+    数据驱动的角色行级过滤。返回 RoleFilterResult(allowed, sql, filtered)。
 
     role_rules 结构（存在 bi_datasources.role_rules，按项目配置）：
         {
@@ -297,34 +368,40 @@ def apply_role_filter(
     rule = _resolve_role_rule(role, role_rules)
 
     if rule == "all":
-        return True, sql
+        return RoleFilterResult(allowed=True, sql=sql)
     if rule is None or rule == "deny":
-        return False, f"当前角色 {role} 无数据查询权限"
+        return RoleFilterResult(allowed=False, sql=f"当前角色 {role} 无数据查询权限")
 
     condition: str | exp.Expression | None = None
     if isinstance(rule, dict):
         if rule.get("column") and rule.get("param"):
             value = params.get(rule["param"])
             if value is None:
-                return False, f"角色 {role} 需要提供参数 {rule['param']}，才能按数据隔离查询"
+                return RoleFilterResult(
+                    allowed=False,
+                    sql=f"角色 {role} 需要提供参数 {rule['param']}，才能按数据隔离查询")
             condition = _build_param_condition(rule["column"], value)
             if condition is None:
                 # 列名不合法 / 参数类型不支持 / 字符串超长 → fail-closed 拒绝
-                return False, f"角色 {role} 的过滤参数 {rule['param']} 不合法，已拒绝查询"
+                return RoleFilterResult(
+                    allowed=False,
+                    sql=f"角色 {role} 的过滤参数 {rule['param']} 不合法，已拒绝查询")
         elif rule.get("value"):
             condition = rule["value"]
         else:
             # 规则不完整（漏配 param/value，或空 dict）→ fail-closed。
             # 配置笔误不能等价于权限全开
-            return False, f"角色 {role} 的过滤规则配置不完整，已拒绝查询"
+            return RoleFilterResult(
+                allowed=False, sql=f"角色 {role} 的过滤规则配置不完整，已拒绝查询")
 
     if condition:
         injected = _inject_where_ast(sql, condition)
         if injected is None:
             # AST 注入失败 → fail-closed 拒绝，绝不能放行未过滤的 SQL
-            return False, "行级过滤条件注入失败，已拒绝查询"
-        sql = injected
-    return True, sql
+            return RoleFilterResult(allowed=False, sql="行级过滤条件注入失败，已拒绝查询")
+        # ★ filtered=True：下游据此区分「业务真的没数据」与「被权限滤掉了」
+        return RoleFilterResult(allowed=True, sql=injected, filtered=True)
+    return RoleFilterResult(allowed=True, sql=sql)
 
 
 def _build_param_condition(column: object, value: object) -> exp.Expression | None:

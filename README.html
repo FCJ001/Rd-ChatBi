@@ -120,8 +120,9 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 <h1 id="rd-chatbi--nl2sql-智能分析平台">rd-chatBI — NL2SQL 智能分析平台</h1>
 <blockquote>
 <p>📖 <strong>HTML 版文档</strong>：<a href="README.html">README.html</a> ｜ <a href="INTERVIEW.html">面试讲解稿 INTERVIEW.html</a> ｜ <a href="SPEAK.html"><strong>面试速记（口述版）SPEAK.html</strong></a> ｜ <a href="docs/diagrams/architecture.html">架构图</a></p>
-<p>🚗 <strong>默认演示场景是汽车</strong>：<code>rd_agent</code>（ALM 研发平台，含 VIN / DTC 故障码 / 责任域）。
-<code>hospital_demo</code> 保留为第二数据源，用于演示「同一份代码换一套角色模型」。
+<p>🚗 <strong>默认数据源是 <code>auto_full</code></strong>：汽车全域 <strong>127 张表 / 13 子域 / 208 万行种子数据</strong>
+（<code>scripts/gen_auto_full.py</code> 生成），考验召回环节在表多且语义相近时的 discrimination。
+<code>hospital_demo</code> 保留为第二数据源，演示「同一份代码换一套角色模型」（config 与案例在本仓库）。
 由 <code>npm run docs</code> 从同名 <code>.md</code> 生成（改了 md 记得重跑）。</p>
 </blockquote>
 <p>自然语言查业务库：多数据源路由 + 9 阶段 NL2SQL 流水线（LangGraph）+ 四层 SQL 安全防线 + 图表推荐渲染（服务端产出 ECharts option，前端渲染）。</p>
@@ -133,7 +134,7 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
   infra/                PG（元数据库/业务库只读，按 event loop 分区池化）、Redis、Milvus、ES、多数据源注册表
   nl2sql/
     router.py           /api/v1/bi/*（query、query-stream SSE、history、datasources）
-    graph.py            LangGraph 图定义（单一来源）：召回(3路并行)→过滤(2路并行)
+    graph.py            LangGraph 图定义（单一来源）：召回(4路并行)→过滤(2路并行)
                         →生成→校验→(纠错回环)→执行
     security.py         SQL 安全部（见下）
     ctx_store.py        对话历史存储（redis / memory 双后端）
@@ -147,21 +148,37 @@ eval/                   离线评测门禁 + 实况执行准确率（exec-match�
 <h2 id="快速开始">快速开始</h2>
 <pre><code class="language-bash">cp .env.example .env          # 填 DASHSCOPE_API_KEY 等
 python -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
-docker network create rd-agent-net   # 基础设施（PG/Redis/Milvus）复用 rd-agent-platform
-docker compose -f docker/docker-compose.yml up -d --build   # 含 ES + 一次性元数据构建
+# 无需外部网络：本项目 compose 自带 PG / Redis / Milvus / ES
+docker compose -f docker/docker-compose.yml up -d --build   # 自带基础设施 + 一次性元数据构建
 uvicorn src.main:app --port 8003
 </code></pre>
-<p>默认数据源 <code>rd_agent</code>（汽车/ALM）；角色 admin / engineer（按责任域）/ business（按业务线）/ aftersales。</p>
+<p>默认数据源 <code>auto_full</code>（汽车全域）；角色 admin / engineer（按工厂）/ sales（按大区）/ customer。</p>
 <p>脚本与评测：</p>
-<pre><code class="language-bash">.venv/bin/python -m pytest                          # 单测（116 条）
-.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：90 条案例过安全层（CI 可跑）
+<pre><code class="language-bash">.venv/bin/python -m pytest                          # 单测（211 条）
+.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：全部案例（当前 104 条）过安全层（CI 可跑）
 .venv/bin/python eval/run_nl2sql_eval.py --live     # 实况准确率（需 LLM + 业务库）
 .venv/bin/python eval/run_nl2sql_eval.py --live --project hospital_demo   # 只跑单个数据源
 .venv/bin/python scripts/make_hospital_cases.py     # 校验 hospital_demo 案例的 golden SQL
 </code></pre>
-<p>评测案例按数据源分文件：<code>eval/cases/nl2sql_cases.json</code>（rd_agent，50 条）、
+<p>评测案例按数据源分文件：<code>eval/cases/nl2sql_cases_auto_full.json</code>（百表库，63 条）、
 <code>eval/cases/nl2sql_cases_hospital.json</code>（hospital_demo，40 条）。
 <code>--project</code> 默认 <code>all</code>，跑全部有案例的数据源。</p>
+<p>压测库的生成与接入（代码零改动，就是标准多数据源流程）：</p>
+<pre><code class="language-bash">.venv/bin/python scripts/gen_auto_full.py                       # 建库 + DDL + 208 万行种子 + YAML
+.venv/bin/python scripts/build_nl2sql_meta.py --datasource auto_full --rebuild
+.venv/bin/python scripts/link_fk_labels.py --datasource auto_full
+.venv/bin/python scripts/sync_examples.py --datasource auto_full      # few-shot 示例库（评测集+badcase golden）
+.venv/bin/python eval/run_nl2sql_eval.py --live --project auto_full   # 百表压测实况
+</code></pre>
+<h3 id="p1-已实施时间锚点--few-shot-示例库详见-docsagent-upgrade-planmd">P1 已实施：时间锚点 + few-shot 示例库（详见 docs/agent-upgrade-plan.md）</h3>
+<ul>
+<li><strong>时间锚点</strong>：相对周期（上月/上上个月/上周/近30天…）边界由 Python 预计算注入 prompt，
+LLM 只抄不算；TIMESTAMP 列强制半开区间写法。防&quot;NOW()-interval 当自然月&quot;静默错误。</li>
+<li><strong>few-shot 示例库</strong>：评测集 golden SQL + 审核通过的 badcase 向量化进 Milvus
+（<code>chatbi_{prefix}_examples</code>），生成 SQL 前检索相似问题注入 prompt ——
+badcase 修复后重跑 <code>sync_examples.py</code> 即在线生效。检索自动剔除与当前问题完全相同的示例（防评测自泄漏）。</li>
+<li><strong>dialect 从业务库连接推断</strong>（P0）：接入 MySQL/DuckDB 等不再需要改 add_context/prompt。</li>
+</ul>
 <h3 id="badcase-回流让题库自己长大">badcase 回流（让题库自己长大）</h3>
 <p>线上真实查询持续回流成待审案例，人工审过后进评测集 —— 题库不是人肉堆出来的。</p>
 <pre><code>线上失败/被拒/空结果 ─┐
@@ -196,7 +213,7 @@ uvicorn src.main:app --port 8003
 <li><strong>去重</strong>：<code>sha256(datasource_id|归一化问题)</code> 唯一约束 + <code>ON CONFLICT</code> upsert。同一条问题反复踩只累加 <code>seen_count</code>，<strong>人工写的 golden_sql / 分类 / 状态永不被机器覆盖</strong>。</li>
 <li><strong>审核</strong>：<code>GET/PATCH /api/v1/bi/badcases</code>，页面 <code>GET /review</code>。鉴权用独立的 <code>ADMIN_TOKEN</code>（不与 <code>METRICS_TOKEN</code> 共用 —— 能抓指标不该等于能改评测集）；未配置 + header 模式下 fail-closed 拒绝。</li>
 <li><strong>导出</strong>：<code>python scripts/export_badcase_cases.py --write</code> 生成 <code>*_reflow.json</code>，<code>git commit</code> 后加 <code>--mark-exported</code> 更新状态。导出前逐条校验（golden 过安全层、分层合法、敏感列数据源禁止 <code>SELECT *</code>），一条脏数据就拒绝整批。</li>
-<li><strong>首次接入</strong>：<code>python scripts/export_badcase_cases.py --seed-from-export</code> 把现有 90 条案例灌进表，让 DB 从第一天就是评测集的真相来源。</li>
+<li><strong>首次接入</strong>：<code>python scripts/export_badcase_cases.py --seed-from-export</code> 把现有案例灌进表，让 DB 从第一天就是评测集的真相来源。</li>
 </ul>
 <h2 id="安全模型">安全模型</h2>
 <p>四层防线，外加数据源级敏感列配置（<code>conf/projects/*.yaml</code> → <code>datasource.sensitive_columns</code>）：</p>

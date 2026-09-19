@@ -23,7 +23,7 @@ async def execute_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
 
     # 角色行级过滤 —— 规则来自 bi_datasources.role_rules（按项目配置，数据驱动）
     from src.nl2sql.security import apply_role_filter
-    allowed, filtered_sql = apply_role_filter(
+    role_filter = apply_role_filter(
         sql,
         ctx.get("role", "patient"),
         role_rules=ctx.get("role_rules"),
@@ -33,6 +33,7 @@ async def execute_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
             "business_line": ctx.get("business_line"),
         },
     )
+    allowed, filtered_sql = role_filter.allowed, role_filter.sql
 
     columns, rows, summary, error = [], [], "", ""
     if not allowed:
@@ -49,7 +50,25 @@ async def execute_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
                 columns, rows, ctx.get("sensitive_columns"),
             )
             source_name = ctx.get("source_name") or "业务数据库"
-            summary = await generate_summary(state["query"], rows, llm, source_name)
+            # ★ 空结果最容易出归因错误：把「数据到哪天为止」的事实一并给摘要，
+            #   否则它会把"该时段还没数据"写成"业务量为 0 / 环比下滑"（实测）。
+            # ★ 只做**代码可判定**的归因（与 engine.run_query 同一套逻辑）：
+            #   ① 行权过滤导致的空 → 说"不在你的权限内"（防信息泄露 + 假工单）
+            #   ② 窗口伸出数据上界 → 说"该时段数据尚未产生"（防误报异常）
+            #   与"结果是否为空"无关：多列对比（本月0/上月66）不是空结果，
+            #   却同样在误报"断崖下滑"。
+            from src.nl2sql.time_bounds import beyond_data_upper_bound, looks_empty
+            extra_note = ""
+            if looks_empty(rows) and role_filter.filtered:
+                extra_note = (
+                    "\n\n【重要】本次查询已按当前用户的数据权限注入过滤条件。"
+                    "结果为空时，正确结论是「该范围不在你的数据权限内」，"
+                    "**不要**说成「该范围没有数据」或「尚未接入」。")
+            else:
+                extra_note = beyond_data_upper_bound(
+                    filtered_sql, state.get("time_bounds") or [])
+            summary = await generate_summary(
+                state["query"], rows, llm, source_name, extra_note=extra_note)
         except DBAPIError as e:
             # 与旧引擎 run_query 对齐：超时归类为友好提示，其余不透出原始
             # 数据库错误文本（可能暴露表结构），详情只进日志

@@ -28,14 +28,17 @@ from src.nl2sql.security import (
     filter_result_columns,
     validate_sql,
 )
+from src.nl2sql.time_anchors import format_anchor_block
+from src.nl2sql.example_store import format_examples_block
 
 
-def build_schema_prompt(tables) -> str:
+def build_schema_prompt(tables, dialect: str = "PostgreSQL") -> str:
     """从元数据动态生成 SCHEMA 描述（多数据源：不再硬编码单项目表结构）。
 
     tables: list[TableInfo]（来自 PgMetaRepository.get_all_tables()）
+    dialect: 从业务库连接推断的方言展示名（engine.run_query 内自动探测后传入）
     """
-    lines = ["## 数据库表结构（PostgreSQL）"]
+    lines = [f"## 数据库表结构（{dialect}）"]
     for t in tables:
         desc = f" -- {t.description}" if t.description else ""
         lines.append(f"{t.name}（{t.role}）{desc}:")
@@ -126,8 +129,14 @@ async def generate_sql(
     context: ConversationContext | None = None,
     error_hint: str = "",
     schema: str = "",
+    examples: list[dict] | None = None,
+    dialect: str = "PostgreSQL",
 ) -> str:
-    """LLM 生成 SQL（schema 由调用方按数据源动态生成，默认用内置 SCHEMA_PROMPT）"""
+    """LLM 生成 SQL（schema 由调用方按数据源动态生成，默认用内置 SCHEMA_PROMPT）
+
+    P1：prompt 永远附加时间锚点（防 NOW()-interval 当自然月）；
+        examples 非空时附加 few-shot 相似问答对。
+    dialect：业务库方言展示名（system prompt 措辞跟着数据源走，不再写死 PostgreSQL）。"""
     schema = schema or SCHEMA_PROMPT
     if context and context.last_result and context.last_result.success:
         prompt = FOLLOWUP_PROMPT.format(
@@ -137,7 +146,11 @@ async def generate_sql(
             schema=schema,
         )
     else:
-        prompt = NL2SQL_SYSTEM_PROMPT.format(schema=schema)
+        prompt = NL2SQL_SYSTEM_PROMPT.format(schema=schema, dialect=dialect)
+
+    prompt = prompt + "\n\n" + format_anchor_block()
+    if examples:
+        prompt = prompt + "\n\n" + format_examples_block(examples)
 
     messages = [SystemMessage(content=prompt)]
     if error_hint:
@@ -169,13 +182,47 @@ async def execute_sql(sql: str, db: AsyncSession) -> tuple[list[dict], list[str]
 
 
 async def generate_summary(
-    question: str, data: list[dict], llm: BaseChatModel, source_name: str = "业务数据库"
+    question: str, data: list[dict], llm: BaseChatModel, source_name: str = "业务数据库",
+    extra_note: str = "",
 ) -> str:
-    """LLM 生成数据摘要（source_name 标注当前数据源，多数据源不再硬编码）"""
+    """LLM 生成数据摘要（source_name 标注当前数据源，多数据源不再硬编码）。
+
+    extra_note：代码判定出的事实补充（见 time_bounds.beyond_data_upper_bound）。
+    ★ 实测缺陷：问「这个月17号」时数据上界是 09-16，摘要却写成「销量归零、
+      断崖式下滑」。原因是摘要模型**不知道数据到哪天为止** —— 把"查不到"
+      当成了"业务为零"。这里把上界事实告诉它，让它能给出正确归因。
+      只在结果为空时才需要，非空结果不传（省 token，也避免干扰正常叙述）。
+    """
     result_str = json.dumps(data[:20], ensure_ascii=False, default=str)
-    prompt = SUMMARY_PROMPT.format(question=question, result=result_str, source_name=source_name)
+    prompt = SUMMARY_PROMPT.format(
+        question=question, result=result_str, source_name=source_name,
+    ) + (extra_note or "")
     response = await safe_ainvoke(llm, [SystemMessage(content=prompt)])
     return response.content
+
+
+async def _empty_result_note(db, data: list[dict], role_filter, role_rules, params,
+                              sql: str = "") -> str:
+    """结果异常时，给摘要模型的事实补充。
+
+    ★ 只做**代码可判定**的归因，不写"请你自己注意"式的提示 —— 实测后者
+      无效：模型仍先给结论、后补免责声明。
+    ★ 上界探测失败就返回空串：宁可不说，也不能编一个上界误导摘要。
+    """
+    from src.nl2sql.time_bounds import beyond_data_upper_bound, detect_time_bounds, looks_empty
+
+    # ① 行级权限过滤导致的空 —— 最优先，否则会退化成"该范围没数据"（信息泄露）
+    if looks_empty(data) and role_filter.filtered:
+        return ("\n\n【重要】本次查询已按当前用户的数据权限注入过滤条件。"
+                "结果为空时，正确结论是「该范围不在你的数据权限内」，"
+                "**不要**说成「该范围没有数据」或「尚未接入」。")
+    # ② 查询引用的日期超出数据上界 —— 与"结果是否为空"无关：
+    #    多列对比（本月0/上月66）不是空结果，却同样在误报"断崖下滑"。
+    try:
+        bounds = await detect_time_bounds(db)
+    except Exception:
+        return ""
+    return beyond_data_upper_bound(sql, bounds)
 
 
 async def run_query(
@@ -190,32 +237,67 @@ async def run_query(
     schema: str = "",
     source_name: str = "业务数据库",
     sensitive_columns: list[str] | None = None,
+    examples: list[dict] | None = None,
 ) -> QueryResult:
     """完整 NL2SQL 流程：生成 SQL → 安全校验 → 行过滤 → 执行 → 摘要
 
     role_rules/params: 数据驱动的行级过滤（见 security.apply_role_filter）
     schema: 当前数据源的动态表结构描述
     source_name: 摘要里标注的数据源名
-    sensitive_columns: 数据源敏感列 —— 文本层拦截 + 结果列过滤（堵 SELECT *）"""
+    sensitive_columns: 数据源敏感列 —— 文本层拦截 + 结果列过滤（堵 SELECT *）
+    examples: few-shot 相似问答对（example_store.find_similar_examples 的结果，
+              调用方按数据源检索后传入；None = 该数据源未建示例库）"""
     error_hint = ""
+
+    # P0：方言探测一次，schema 头部跟着数据源走（无论调用方写了什么方言名都重写）
+    from src.nl2sql.nodes.add_context import detect_db_info
+    db_info = detect_db_info({"dw_db_session": db})
+    if schema:
+        first_line, _, rest = schema.partition("\n")
+        if "## 数据库表结构" in first_line:
+            schema = f"## 数据库表结构（{db_info['dialect']}）" + (("\n" + rest) if rest else "")
 
     for attempt in range(MAX_RETRIES + 1):
         raw_sql = await generate_sql(
             question, llm, context=context, error_hint=error_hint, schema=schema,
+            examples=examples, dialect=db_info["dialect"],
         )
         logger.info(f"NL2SQL (attempt {attempt + 1}): {raw_sql}")
 
-        valid, validated = validate_sql(raw_sql, sensitive_columns=sensitive_columns)
-        if not valid:
-            result = QueryResult(question=question, sql=raw_sql,
-                                 error=f"安全校验失败: {validated}", success=False)
+        # ★ 拒答短路：模型输出自然语言而非 SQL（典型：敏感字段被第一层防线
+        #   隐藏，模型如实说「没有这个字段」）。纠错只会让它编造列名硬凑。
+        from src.nl2sql.nodes.generate_sql import is_sql_text
+        if raw_sql.strip() and not is_sql_text(raw_sql):
+            result = QueryResult(
+                question=question, sql="",
+                error=f"该请求无法生成查询：{raw_sql.strip()[:300]}", success=False,
+            )
             if context:
                 context.add(result)
             return result
 
-        allowed, filtered_sql = apply_role_filter(
+        valid, validated = validate_sql(
+            raw_sql, sensitive_columns=sensitive_columns,
+            dialect=db_info.get("sqlglot", "postgres"),
+        )
+        if not valid:
+            # 安全校验失败 → 把拒绝原因喂回 LLM 纠错重试（如误用敏感字段时改写）。
+            # ★ fail-closed 不变：只有过校验的 SQL 才会到执行；预算用尽仍失败则终止。
+            if attempt == MAX_RETRIES:
+                result = QueryResult(question=question, sql=raw_sql,
+                                     error=f"安全校验失败: {validated}", success=False)
+                if context:
+                    context.add(result)
+                return result
+            error_hint = f"安全校验被拒：{validated}。请改写（敏感字段不在 schema 中，" \
+                         f"用提供的编号/ID 列替代），只输出一条 SELECT 语句"
+            logger.warning(f"安全校验失败 (attempt {attempt + 1}): {validated}")
+            continue
+
+        role_filter = apply_role_filter(
             validated, role, role_rules=role_rules, params=params,
         )
+        allowed, filtered_sql = role_filter.allowed, role_filter.sql
         if not allowed:
             result = QueryResult(question=question, sql=raw_sql,
                                  error=filtered_sql, success=False)
@@ -228,7 +310,13 @@ async def run_query(
             # 执行层防线：SELECT * 能穿过文本校验，敏感列在这里从结果集剔除
             # （必须在 generate_summary 之前，否则敏感数据仍会进 LLM prompt）
             columns, data = filter_result_columns(columns, data, sensitive_columns)
-            summary = await generate_summary(question, data, llm, source_name)
+            # ★ 语义为空时必须换归因，否则摘要会把"没有数据"说成"业务为零"：
+            #   ① 被行级权限过滤 → 说"不在你的权限内"（防信息泄露 + 假工单）
+            #   ② 查的时间段超出数据上界 → 说"该时段数据尚未产生"（防误报异常）
+            extra = await _empty_result_note(
+                db, data, role_filter, role_rules, params, sql=filtered_sql)
+            summary = await generate_summary(
+                question, data, llm, source_name, extra_note=extra)
 
             result = QueryResult(
                 question=question, sql=filtered_sql,

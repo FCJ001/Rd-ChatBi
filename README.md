@@ -2,8 +2,9 @@
 
 > 📖 **HTML 版文档**：[README.html](README.html) ｜ [面试讲解稿 INTERVIEW.html](INTERVIEW.html) ｜ [**面试速记（口述版）SPEAK.html**](SPEAK.html) ｜ [架构图](docs/diagrams/architecture.html)
 >
-> 🚗 **默认演示场景是汽车**：`rd_agent`（ALM 研发平台，含 VIN / DTC 故障码 / 责任域）。
-> `hospital_demo` 保留为第二数据源，用于演示「同一份代码换一套角色模型」。
+> 🚗 **默认数据源是 `auto_full`**：汽车全域 **127 张表 / 13 子域 / 208 万行种子数据**
+> （`scripts/gen_auto_full.py` 生成），考验召回环节在表多且语义相近时的 discrimination。
+> `hospital_demo` 保留为第二数据源，演示「同一份代码换一套角色模型」（config 与案例在本仓库）。
 > 由 `npm run docs` 从同名 `.md` 生成（改了 md 记得重跑）。
 
 自然语言查业务库：多数据源路由 + 9 阶段 NL2SQL 流水线（LangGraph）+ 四层 SQL 安全防线 + 图表推荐渲染（服务端产出 ECharts option，前端渲染）。
@@ -18,7 +19,7 @@ src/
   infra/                PG（元数据库/业务库只读，按 event loop 分区池化）、Redis、Milvus、ES、多数据源注册表
   nl2sql/
     router.py           /api/v1/bi/*（query、query-stream SSE、history、datasources）
-    graph.py            LangGraph 图定义（单一来源）：召回(3路并行)→过滤(2路并行)
+    graph.py            LangGraph 图定义（单一来源）：召回(4路并行)→过滤(2路并行)
                         →生成→校验→(纠错回环)→执行
     security.py         SQL 安全部（见下）
     ctx_store.py        对话历史存储（redis / memory 双后端）
@@ -35,26 +36,45 @@ eval/                   离线评测门禁 + 实况执行准确率（exec-match�
 ```bash
 cp .env.example .env          # 填 DASHSCOPE_API_KEY 等
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
-docker network create rd-agent-net   # 基础设施（PG/Redis/Milvus）复用 rd-agent-platform
-docker compose -f docker/docker-compose.yml up -d --build   # 含 ES + 一次性元数据构建
+# 无需外部网络：本项目 compose 自带 PG / Redis / Milvus / ES
+docker compose -f docker/docker-compose.yml up -d --build   # 自带基础设施 + 一次性元数据构建
 uvicorn src.main:app --port 8003
 ```
 
-默认数据源 `rd_agent`（汽车/ALM）；角色 admin / engineer（按责任域）/ business（按业务线）/ aftersales。
+默认数据源 `auto_full`（汽车全域）；角色 admin / engineer（按工厂）/ sales（按大区）/ customer。
 
 脚本与评测：
 
 ```bash
-.venv/bin/python -m pytest                          # 单测（116 条）
-.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：90 条案例过安全层（CI 可跑）
+.venv/bin/python -m pytest                          # 单测（211 条）
+.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：全部案例（当前 104 条）过安全层（CI 可跑）
 .venv/bin/python eval/run_nl2sql_eval.py --live     # 实况准确率（需 LLM + 业务库）
 .venv/bin/python eval/run_nl2sql_eval.py --live --project hospital_demo   # 只跑单个数据源
 .venv/bin/python scripts/make_hospital_cases.py     # 校验 hospital_demo 案例的 golden SQL
 ```
 
-评测案例按数据源分文件：`eval/cases/nl2sql_cases.json`（rd_agent，50 条）、
+评测案例按数据源分文件：`eval/cases/nl2sql_cases_auto_full.json`（百表库，63 条）、
 `eval/cases/nl2sql_cases_hospital.json`（hospital_demo，40 条）。
 `--project` 默认 `all`，跑全部有案例的数据源。
+
+压测库的生成与接入（代码零改动，就是标准多数据源流程）：
+
+```bash
+.venv/bin/python scripts/gen_auto_full.py                       # 建库 + DDL + 208 万行种子 + YAML
+.venv/bin/python scripts/build_nl2sql_meta.py --datasource auto_full --rebuild
+.venv/bin/python scripts/link_fk_labels.py --datasource auto_full
+.venv/bin/python scripts/sync_examples.py --datasource auto_full      # few-shot 示例库（评测集+badcase golden）
+.venv/bin/python eval/run_nl2sql_eval.py --live --project auto_full   # 百表压测实况
+```
+
+### P1 已实施：时间锚点 + few-shot 示例库（详见 docs/agent-upgrade-plan.md）
+
+- **时间锚点**：相对周期（上月/上上个月/上周/近30天…）边界由 Python 预计算注入 prompt，
+  LLM 只抄不算；TIMESTAMP 列强制半开区间写法。防"NOW()-interval 当自然月"静默错误。
+- **few-shot 示例库**：评测集 golden SQL + 审核通过的 badcase 向量化进 Milvus
+  （`chatbi_{prefix}_examples`），生成 SQL 前检索相似问题注入 prompt ——
+  badcase 修复后重跑 `sync_examples.py` 即在线生效。检索自动剔除与当前问题完全相同的示例（防评测自泄漏）。
+- **dialect 从业务库连接推断**（P0）：接入 MySQL/DuckDB 等不再需要改 add_context/prompt。
 
 ### badcase 回流（让题库自己长大）
 
@@ -75,7 +95,7 @@ uvicorn src.main:app --port 8003
 - **去重**：`sha256(datasource_id|归一化问题)` 唯一约束 + `ON CONFLICT` upsert。同一条问题反复踩只累加 `seen_count`，**人工写的 golden_sql / 分类 / 状态永不被机器覆盖**。
 - **审核**：`GET/PATCH /api/v1/bi/badcases`，页面 `GET /review`。鉴权用独立的 `ADMIN_TOKEN`（不与 `METRICS_TOKEN` 共用 —— 能抓指标不该等于能改评测集）；未配置 + header 模式下 fail-closed 拒绝。
 - **导出**：`python scripts/export_badcase_cases.py --write` 生成 `*_reflow.json`，`git commit` 后加 `--mark-exported` 更新状态。导出前逐条校验（golden 过安全层、分层合法、敏感列数据源禁止 `SELECT *`），一条脏数据就拒绝整批。
-- **首次接入**：`python scripts/export_badcase_cases.py --seed-from-export` 把现有 90 条案例灌进表，让 DB 从第一天就是评测集的真相来源。
+- **首次接入**：`python scripts/export_badcase_cases.py --seed-from-export` 把现有案例灌进表，让 DB 从第一天就是评测集的真相来源。
 
 ## 安全模型
 

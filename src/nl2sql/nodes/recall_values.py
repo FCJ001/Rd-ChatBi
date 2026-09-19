@@ -10,6 +10,7 @@ from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
 from src.nl2sql.llm_text import safe_ainvoke
 from src.nl2sql.prompt_loader import load_prompt
+from src.core.metrics import RETRIEVAL_REQUESTS
 
 
 async def recall_values(state: DataAgentState, ctx: DataAgentContext) -> dict:
@@ -43,6 +44,7 @@ async def recall_values(state: DataAgentState, ctx: DataAgentContext) -> dict:
         #   source="db"   —— 业务库里的**真实取值**，可直接写进 WHERE。
         # 两者由 merge_info 分别标注后挂到列的 examples 上，模型按标注区分使用。
         retrieved: dict[str, any] = {}
+        search_failures = 0
         for kw in all_keywords:
             try:
                 values = await repo.search(kw, size=10)
@@ -50,7 +52,12 @@ async def recall_values(state: DataAgentState, ctx: DataAgentContext) -> dict:
                     if v.id not in retrieved:
                         retrieved[v.id] = v
             except Exception:
+                search_failures += 1
                 continue
+        if search_failures:
+            RETRIEVAL_REQUESTS.labels(channel="values", status="failed").inc()
+        RETRIEVAL_REQUESTS.labels(
+            channel="values", status="ok" if retrieved else "empty").inc()
 
         from src.core.logger import logger
         logger.info(f"[recall_values] 扩展关键词={extra_keywords}, ES 命中 {len(retrieved)} 条真实枚举值")

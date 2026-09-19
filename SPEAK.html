@@ -153,12 +153,12 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 </tr>
 <tr>
 <td><strong>找</strong></td>
-<td>找表、找字段、找指标、找枚举值</td>
-<td>三路同时找（见下）</td>
+<td>找表、找字段、找指标、找枚举值、找相似示例</td>
+<td>四路同时找（见下）</td>
 </tr>
 <tr>
 <td><strong>并</strong></td>
-<td>把三路结果合并成一张完整表结构</td>
+<td>把四路结果合并成一张完整表结构</td>
 <td>查 PG 元数据</td>
 </tr>
 <tr>
@@ -199,16 +199,17 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 <li>验货交货：查、改、跑 —— <strong>安全校验在这儿</strong>，过了才执行</li>
 </ul>
 <hr>
-<h2 id="三三路召回记一句话">三、三路召回：记一句话</h2>
+<h2 id="三四路召回记一句话">三、四路召回：记一句话</h2>
 <blockquote>
-<p>查数据无非搞清楚三件事：<strong>查哪些列？值长什么样？口径怎么算？</strong></p>
+<p>查数据无非搞清楚四件事：<strong>查哪些列？值长什么样？口径怎么算？以前怎么问的？</strong></p>
 </blockquote>
 <ul>
 <li><strong>查哪些列</strong> → 走向量检索（Milvus），因为列名是语义匹配</li>
 <li><strong>值长什么样</strong> → 走 Elasticsearch 全文检索，因为「未关闭」「critical」是精确字面量，向量检索反而不准</li>
 <li><strong>口径怎么算</strong> → 也走向量（Milvus），指标定义是业务语言</li>
+<li><strong>以前怎么问的</strong> → 还是向量（Milvus），把评测集的标准答案和审核过的 badcase 建成示例库，生成前先找几条相似问题当参考（few-shot）</li>
 </ul>
-<p><strong>为什么是三个库不是一个大杂烩</strong>：东西的性质不一样，就该用不一样的存储。</p>
+<p><strong>为什么是三个库不是一个大杂烩</strong>：东西的性质不一样，就该用不一样的存储。示例库和列/指标都是向量，但<strong>用途不同</strong>——前三个解决「查哪」，示例解决「怎么查」。</p>
 <hr>
 <h2 id="四四层防线记八个字">四、四层防线：记八个字</h2>
 <blockquote>
@@ -245,14 +246,14 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 </tbody></table>
 <p><strong>为什么第四层前面还有三层</strong>：只读账号挡得住&quot;改数据&quot;，挡不住&quot;偷看数据&quot;。</p>
 <hr>
-<h2 id="五数字阶梯9---4---3---2---1">五、数字阶梯：9 - 4 - 3 - 2 - 1</h2>
+<h2 id="五数字阶梯9---4---4---2---1">五、数字阶梯：9 - 4 - 4 - 2 - 1</h2>
 <blockquote>
 <p>对方问「能概括一下吗」，报这串数字。</p>
 </blockquote>
 <ul>
 <li><strong>9</strong> 步流水线</li>
 <li><strong>4</strong> 层安全防线</li>
-<li><strong>3</strong> 路并行召回</li>
+<li><strong>4</strong> 路并行召回</li>
 <li><strong>2</strong> 组并行（召回一组、过滤一组）</li>
 <li><strong>1</strong> 轮纠错（改完必须重新过校验，只给一次机会）</li>
 </ul>
@@ -272,8 +273,8 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 <td>大模型不认识我们公司的表。<strong>就像让一个没来过你家的人找东西</strong>，你得先告诉他东西大概在哪个柜子，不能把整个家翻一遍。</td>
 </tr>
 <tr>
-<td>为什么三路并行</td>
-<td>找东西的三条线索互不相干，<strong>没道理排队做</strong>。</td>
+<td>为什么四路并行</td>
+<td>找东西的四条线索互不相干，<strong>没道理排队做</strong>。</td>
 </tr>
 <tr>
 <td>为什么执行前要 EXPLAIN</td>
@@ -316,7 +317,7 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 </blockquote>
 <p><strong>问：怎么保证改了代码不出问题？</strong></p>
 <blockquote>
-<p>「<strong>90 道评测题进 CI</strong>。而且离线那道门禁是纯函数，不连库：每条标准答案的 SQL 必须先过安全层——它被拒就两种可能，要么题目写错，要么<strong>安全层误伤了合法查询</strong>，两种都得拦在合并前。」</p>
+<p>「<strong>232 道评测题进 CI</strong>，其中离线那道门禁是纯函数、不连库：每条标准答案的 SQL 必须先过安全层——它被拒就两种可能，要么题目写错，要么<strong>安全层误伤了合法查询</strong>，两种都得拦在合并前。」</p>
 </blockquote>
 <p><strong>问：并发上有什么考虑？</strong></p>
 <blockquote>
@@ -329,9 +330,31 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 <p>「有几个还没做的：
 一是数据库连接串<strong>明文放在配置里</strong>，生产要接密钥管理；
 二是业务库改了表结构，元数据<strong>不会自动跟进</strong>，现在得手动重跑构建；
-三是图表类型是模型单次推荐的，<strong>没有规则兜底</strong>，可能出现分类太多还画饼图。」</p>
+三是图表类型是模型单次推荐的，<strong>没有规则兜底</strong>，可能出现分类太多还画饼图；
+四是判分器的数值容差挡不住模型主动 <code>ROUND()</code>——一个增长率题模型输出 <code>0.05</code>、标准答案 <code>0.04921</code>，还是判错。这条我还没定怎么修。」</p>
 </blockquote>
 <p><strong>说得出局限，比说得出优点更让人信。</strong></p>
+<h3 id="81-更强的一条讲我发现我的评测判分器本身是错的-优先讲这条">8.1 更强的一条：讲「我发现我的评测判分器本身是错的」（★ 优先讲这条）</h3>
+<p>上面三条是<strong>配置类</strong>局限，做过一版 demo 的人都能说。下面这条是<strong>度量类</strong>局限，能讲住面试官：</p>
+<blockquote>
+<p>「跑实况评测时，<strong>明细查询一类 6 题全军覆没，0%</strong>。我以为是大模型不会写明细 SQL，下钻到数据库才发现是<strong>我的判分器在问一个没有唯一答案的问题</strong>：</p>
+<p>一题是『最近 10 条致命缺陷』——实际有 4000 行候选，<strong>最新时间戳上并列 11 行</strong>，golden 只取 10，哪 10 条是任意的。另一题 golden 干脆<strong>没有 ORDER BY 却写了 LIMIT 20</strong>，而系统侧安全层会把 LIMIT 钳到 100，两边拿两个合法子集互比。</p>
+<p>更麻烦的是<strong>判分器和被测系统口径不一致</strong>：golden 跑的是未经钳制的原始 SQL，模型跑的是钳制过的——有一条 golden 返回 336 行，而系统最多 100 行，<strong>它自己都过不了自己的门禁</strong>。</p>
+<p>我改成三态判定：完全相等算过，构成真子集关系判<strong>无唯一答案、不计分</strong>，其余才算错。关键是不能宽松成『有重叠就放过』——我写了条测试钉住：<code>[0..9]</code> 和 <code>[5..14]</code> 有交集但互不包含，<strong>必须判错</strong>。另外给离线门禁加了案例 lint，专门点名『带 LIMIT 却没 ORDER BY』的题，实测命中 4 条。</p>
+<p><strong>但这还没完。<strong>改完拿真模型重跑，我又发现判分器在</strong>挑模型的输出格式</strong>：</p>
+<p>一题是『上月和上上月充电次数差多少』——golden 只返回一个差值 <code>0</code>，模型返回了三列（上月 7728、上上月 7728、差值 0），<strong>数值全对</strong>，但被判错。根因是我的判分器把一行里的值排序成一个元组，<strong>丢掉了列结构</strong>，模型多给一列就判不等。改成逐行一对一匹配、按列值子集比较（列名不参与，模型的别名和标准答案不同是常态）。</p>
+<p>另一题是『今年以来每月交付量』——9 个月的计数<strong>逐个相同</strong>，唯一差异是 golden 返回 <code>datetime</code>、模型返回 <code>&#39;2026-01&#39;</code> 字符串。<code>str(datetime)</code> 是 <code>2026-01-01 00:00:00+00:00</code>，跟 <code>&#39;2026-01&#39;</code> 不相等。**模型把月份格式化得更规范，反而被判错。**加了日期等价归一化，边界卡得很紧：只有带时间部分的 TIMESTAMP 零点才归到月，纯 <code>&#39;2026-01-01&#39;</code> 不缩（那是 DATE 列的形态，缩了会把「1 月 1 日」和「整个 1 月」混掉）。</p>
+<p><strong>五类问题修完，同一套模型从 59% 涨到 78%</strong>——那 19 个点里大部分不是模型变强，是判分器不再挑格式了（明细 0%→50%、排序 TopN 33%→67%、easy 73%→100%）。</p>
+<p><strong>所以我最想说的一句是：我怀疑我自己报过的每一个准确率数字。</strong>」</p>
+</blockquote>
+<p><strong>为什么这条强</strong>：它同时证明三件事——① 我有能发现它的测试 ② 我会下钻找真因而不是甩锅给模型 ③ <strong>我怀疑自己的度量</strong>。绝大多数候选人只会报一个准确率数字，不会说「我怀疑我这个数字」。</p>
+<h3 id="82-分层门禁对方追问下一步呢时答">8.2 分层门禁（对方追问「下一步呢」时答）</h3>
+<blockquote>
+<p>「<strong>分层门限补上了</strong>。原来只有一个总分门限，而总分里单表聚合和分组统计都是 100%、<strong>明细查询是 0%</strong>——只看总分等于没看见。现在按『数据源 × 类别』各自设门限，<strong>首版一律要求 100% 不放宽</strong>：先把哪一类漏水变成 CI 里可见的事实，而不是调低门限让它变绿。」</p>
+<p>「立的时候还踩了个坑：第一版我用排除法挑『类别』键，结果 <strong>easy / medium / hard 全被当成类别</strong>，按 100% 报了一堆假失败——英文难度键里没有 <code>/</code>，排除法挡不住。改成从案例文件读真实类别名的<strong>正面白名单</strong>。」</p>
+<p>「还没做的是<strong>把这几类修上去</strong>（多表 JOIN 71% / 排序 TopN 67% / 时间窗口 78% / 明细 50%），以及给明细类的 golden 补唯一 tie-breaker。」</p>
+</blockquote>
+<p><strong>别主动提 P1 检索 Agent 化 / 语义层 DSL</strong>：按当前判分口径，这两个拿不到<strong>可归因</strong>的收益（收益会被判分噪声吃掉）。如果对方问到，就说「在做之前我先把度量修准，否则 A/B 没有意义」——这是加分答法。</p>
 <hr>
 <h2 id="九最后白板上画什么">九、最后：白板上画什么</h2>
 <p><strong>只画这条线，别画细节：</strong></p>
@@ -362,7 +385,7 @@ flowchart LR
 <li>「<strong>NL2SQL 平台</strong>，大白话查库，自动出图表。」</li>
 <li>「<strong>切找并筛补写查改跑</strong>，九步。」</li>
 <li>「<strong>看不见、拦得住、捞得回、兜得底</strong>，四层防线。」</li>
-<li>「<strong>90 道评测题进了 CI</strong>，改代码会红。」</li>
+<li>「<strong>232 道评测题进了 CI</strong>，改代码会红。」</li>
 </ol>
 
 </main>

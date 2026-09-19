@@ -9,7 +9,7 @@ datasource:
   code: hospital_demo
   name: 医院运营 demo
   description: 模拟医院门诊/住院运营数据，ChatBI 默认演示数据源
-  dsn: postgresql+asyncpg://rdagent:rdagent123@localhost:5432/chatbi_demo
+  dsn: postgresql+asyncpg://rdagent:rdagent123@localhost:15432/chatbi_demo
   milvus_prefix: chatbi
   es_prefix: chatbi
   # 敏感列：物理表里存在但元数据故意不定义（Prompt 层防线）。

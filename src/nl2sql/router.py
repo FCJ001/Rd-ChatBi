@@ -20,7 +20,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import get_embedding_model, get_llm, get_llm_for_datasource
+from src.api.deps import (
+    get_embedding_model,
+    get_llm,
+    get_llm_for_datasource,
+)
 from src.core.base_schema import ResponseSchema
 from src.core.deps import UserContext, get_current_user
 from src.core.exceptions import BizException
@@ -42,6 +46,7 @@ from src.nl2sql.engine import (
     resolve_question,
     run_query,
 )
+from src.nl2sql.example_store import MilvusExampleRepository, find_similar_examples
 from src.nl2sql.pipeline import run_pipeline
 from src.nl2sql.repositories import (
     ESValueRepository,
@@ -305,6 +310,12 @@ async def bi_query(
     schema = await _build_schema(ds)
     params = _user_params(user)
 
+    # P1 主线 B：few-shot 相似示例（未建示例库/检索失败 → 空列表，不阻塞）
+    examples = await find_similar_examples(
+        MilvusExampleRepository(get_milvus_client(), prefix=ds.milvus_prefix),
+        get_embedding_model(), req.question,
+    )
+
     result = await run_query(
         question=req.question,
         llm=llm,
@@ -317,6 +328,7 @@ async def bi_query(
         schema=schema,
         source_name=ds.name,
         sensitive_columns=ds.sensitive_columns,
+        examples=examples,
     )
 
     resp = BIQueryResponse(
@@ -403,11 +415,16 @@ async def _build_pipeline_context(
     meta_db = AsyncSessionLocal()
 
     ctx = {
+        # 全链路单模型：生成 SQL / 纠错 / 关键词扩展 / 筛选 / 图表 / 摘要
+        # 共用这一个实例（官方 API 只提供 deepseek-flash 与 deepseek-v4-pro，
+        # 分档要有第二个模型才有意义）。
         "llm": get_llm_for_datasource(ds.llm_config),
         "embedding_model": get_embedding_model(),
         "milvus_client": milvus,
         "milvus_column_repo": MilvusColumnRepository(milvus, prefix=ds.milvus_prefix),
         "milvus_metric_repo": MilvusMetricRepository(milvus, prefix=ds.milvus_prefix),
+        # P1 主线 B：few-shot 示例库（未建库的 数据源 recall_examples 自动跳过）
+        "milvus_example_repo": MilvusExampleRepository(milvus, prefix=ds.milvus_prefix),
         "es_client": es,
         "es_value_repo": ESValueRepository(es, prefix=ds.es_prefix),
         "pg_meta_repo": PgMetaRepository(meta_db, ds.id),
