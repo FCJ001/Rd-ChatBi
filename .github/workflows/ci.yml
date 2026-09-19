@@ -47,7 +47,7 @@ jobs:
         env:
           POSTGRES_USER: rdagent
           POSTGRES_PASSWORD: rdagent123
-          POSTGRES_DB: rd_agent
+          POSTGRES_DB: chatbi_demo
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 5s

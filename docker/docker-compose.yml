@@ -1,17 +1,35 @@
 # ============================================================
-# rd-chatBI 编排
+# rd-chatBI 自包含编排（不依赖任何兄弟项目）
 #
-# 策略：基础设施复用 rd-agent-platform（PG/Redis/Milvus 已在
-#       rd-agent-net 网络里，库/索引/collection 前缀隔离），
-#       本项目只新增应用容器 + Elasticsearch（列值召回）。
+# ★ 为什么必须显式写 name（两个都要钉死）：
+#   Compose 的项目名默认取**compose 文件所在目录的 basename** —— 本文件在
+#   `rd-chatBI/docker/` 下，于是项目名曾经就是 `docker`。三个后果：
+#     ① `docker compose down` 的作用域跨项目：任何别的项目只要也把 compose
+#        放在叫 docker/ 的目录里，就会被归到同一个项目名下互相误伤；
+#     ② **卷名前缀跟着变**：数据卷叫 `docker_chatbi_pg_data` 而不是
+#        `rd-chatbi_...`，且改项目名会让旧卷"孤儿化"（容器新建空卷，数据看似丢失）；
+#     ③ `docker volume ls` 里看不出这些卷属于谁。
+#   所以这里 `name:` 和每个卷的 `name:` 都显式钉死 —— 以后改目录结构也不波及数据。
+#
+# ★ 为什么自带 PG/Redis/Milvus：原先复用 rd-agent-platform 的实例
+#   （共享网络 rd-agent-platform_rd-agent-net），有三个实际风险：
+#     ① Milvus 的数据目录在兄弟项目里（docker/milvus_data），
+#        那个项目一清理，本项目的向量数据跟着没；
+#     ② Redis 当时跑在**匿名卷**上，容器删掉数据就找不回；
+#     ③ 那几个容器的 restart 策略是 no（手工 docker run 起的），
+#        机器重启后不会自拉起，本项目跟着连不上。
+#   现在全部自带命名卷，`docker compose up -d` 起来就是一套完整的。
+#
+# ★ 端口为什么不是默认的 5432/6379/19530：
+#   宿主机上 rd-agent-platform 的实例仍在运行（且它自己 + Mem0 还在用），
+#   占着默认端口。本项目用独立端口并存，互不干扰 —— 也不去停别人的容器。
 #
 # 启动：
-#   docker network create rd-agent-net   # 已存在则忽略
-#   docker compose up -d --build
-#
-# 首次启动会自动跑 init（建 demo 库表 + 种子数据 + 元数据三层构建），
-# 需要在 .env 里配好 DASHSCOPE_API_KEY。
+#   docker compose -f docker/docker-compose.yml up -d --build
+# 首次启动 chatbi-init 会自动建库/建表/灌种子/构建元数据三层。
 # ============================================================
+
+name: rd-chatbi
 
 services:
   # ── 应用 ──────────────────────────────────────────────────
@@ -30,10 +48,14 @@ services:
       - ../.env
     environment:
       # 容器内用服务名互访（覆盖 .env 的 localhost）
-      DB_HOST: rd-agent-postgres
-      REDIS_HOST: rd-agent-redis
-      MILVUS_HOST: rd-agent-milvus
+      DB_HOST: chatbi-pg
+      DB_PORT: "5432"          # 容器内仍是默认端口，只有宿主机映射改成了 15432
+      REDIS_HOST: chatbi-redis
+      REDIS_PORT: "6379"
+      MILVUS_HOST: chatbi-milvus
+      MILVUS_PORT: "19530"
       ES_HOST: chatbi-es
+      ES_PORT: "9200"
     healthcheck:
       # 无 curl 的 slim 镜像用 python 探活
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=3)"]
@@ -44,13 +66,120 @@ services:
     depends_on:
       chatbi-es:
         condition: service_healthy
+      chatbi-pg:
+        condition: service_healthy
+      chatbi-redis:
+        condition: service_healthy
+      chatbi-milvus:
+        condition: service_healthy
       chatbi-init:
         condition: service_completed_successfully
-    networks:
-      - rd-agent-net
     restart: unless-stopped
 
-  # ── Elasticsearch（列值召回，本项目新增）────────────────────
+  # ── PostgreSQL（本项目自带，与兄弟项目实例并存）───────────
+  chatbi-pg:
+    image: postgres:16
+    container_name: chatbi-pg
+    environment:
+      POSTGRES_USER: rdagent
+      POSTGRES_PASSWORD: rdagent123
+      POSTGRES_DB: rd_chatbi
+    # ★ 宿主机 15432 → 容器 5432（默认端口被兄弟项目占着）
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - chatbi_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rdagent -d rd_chatbi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis（会话历史 / 跨 worker 限流）─────────────────────
+  chatbi-redis:
+    image: redis:7-alpine
+    container_name: chatbi-redis
+    # 会话历史有 TTL、限流窗口只有几十秒 —— 丢了的代价是"用户要多问一遍"，
+    # 所以不开 AOF，只留 RDB 快照，省磁盘也省 fsync
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - chatbi_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Milvus standalone（列/指标/示例的向量召回）───────────
+  # ★ 数据目录用**命名卷**（不再是兄弟项目里的绑定挂载）
+  chatbi-milvus:
+    image: milvusdb/milvus:v2.6.13
+    container_name: chatbi-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      # 容器内走 compose 网络的服务名
+      ETCD_ENDPOINTS: chatbi-etcd:2379
+      MINIO_ADDRESS: chatbi-minio:9000
+      MQ_TYPE: woodpecker
+    volumes:
+      - chatbi_milvus_data:/var/lib/milvus
+    ports:
+      - "127.0.0.1:19531:19530"   # gRPC（SDK 连接）
+      - "127.0.0.1:19091:9091"    # HTTP（健康检查）
+    depends_on:
+      chatbi-etcd:
+        condition: service_started
+      chatbi-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+  chatbi-etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: chatbi-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: etcd -advertise-client-urls=http://chatbi-etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - chatbi_etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
+  chatbi-minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: chatbi-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - chatbi_minio_data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Elasticsearch（列值召回）──────────────────────────────
   chatbi-es:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
     container_name: rd-chatbi-es
@@ -68,10 +197,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks:
-      - rd-agent-net
+    restart: unless-stopped
 
-  # ── 一次性初始化（demo 数据 + 元数据三层构建）───────────────
+  # ── 一次性初始化（建表 + 种子 + 元数据三层构建）───────────
   chatbi-init:
     build:
       context: ..
@@ -81,31 +209,59 @@ services:
     env_file:
       - ../.env
     environment:
-      DB_HOST: rd-agent-postgres
-      REDIS_HOST: rd-agent-redis
-      MILVUS_HOST: rd-agent-milvus
+      DB_HOST: chatbi-pg
+      DB_PORT: "5432"
+      REDIS_HOST: chatbi-redis
+      REDIS_PORT: "6379"
+      MILVUS_HOST: chatbi-milvus
+      MILVUS_PORT: "19530"
       ES_HOST: chatbi-es
+      ES_PORT: "9200"
       # 默认增量 upsert（幂等、不重复烧 embedding）；改元数据结构时 REBUILD_META=true
       REBUILD_META: ${REBUILD_META:-false}
     command: >
-      sh -c "python scripts/init_demo_data.py &&
-             FLAG='';
-             if [ \"$$REBUILD_META\" = 'true' ]; then FLAG='--rebuild'; fi;
-             for f in conf/projects/*.yaml; do
+      sh -c "for f in conf/projects/*.yaml; do
                ds=$$(python -c \"import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))['datasource']['code'])\" $$f);
-               python scripts/build_nl2sql_meta.py --datasource $$ds $$FLAG;
+               echo \"[init] 构建数据源 $$ds\";
+               FLAG='';
+               if [ \"$$REBUILD_META\" = 'true' ]; then FLAG='--rebuild'; fi;
+               python scripts/build_nl2sql_meta.py --datasource $$ds $$FLAG &&
+               python scripts/sync_examples.py --datasource $$ds || exit 1;
              done"
     depends_on:
       chatbi-es:
         condition: service_healthy
-    networks:
-      - rd-agent-net
+      chatbi-pg:
+        condition: service_healthy
+      chatbi-milvus:
+        condition: service_healthy
     restart: "no"
 
 volumes:
-  chatbi_es_data:
-
-networks:
-  rd-agent-net:
+  # ★ 每个卷都显式 name：不写的话卷名会是 `{项目名}_{卷名}`，改项目名就丢数据。
+  #   external: true 是必须的 —— 卷名由我们显式指定，compose 不负责创建，
+  #   不声明的话每次 up 都会警告 "volume ... was not created by Docker Compose"。
+  #   首次部署请先手动建卷（或去掉 external，让 compose 按 name 建）。
+  chatbi_pg_data:
+    name: rd-chatbi_pg_data
     external: true
-    name: rd-agent-platform_rd-agent-net   # rd-agent-platform compose 的实际网络名   # 复用 rd-agent-platform 创建的网络
+  chatbi_redis_data:
+    name: rd-chatbi_redis_data
+    external: true
+  chatbi_milvus_data:
+    name: rd-chatbi_milvus_data
+    external: true
+  chatbi_etcd_data:
+    name: rd-chatbi_etcd_data
+    external: true
+  chatbi_minio_data:
+    name: rd-chatbi_minio_data
+    external: true
+  chatbi_es_data:
+    name: rd-chatbi_es_data
+    external: true
+
+# ★ 不再 external：本项目自建网络，不引用 rd-agent-platform 的网络名
+networks:
+  default:
+    name: chatbi-net

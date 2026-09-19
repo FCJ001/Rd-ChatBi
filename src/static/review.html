@@ -89,7 +89,7 @@ const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 function headers() {
   return {
     'Content-Type':'application/json',
-    'X-Project-Id': $('dsSelect').value || 'rd_agent',
+    'X-Project-Id': $('dsSelect').value || 'auto_full',
     'Authorization': 'Bearer ' + ($('token').value || ''),
   };
 }

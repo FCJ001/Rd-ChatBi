@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # ---------------- PostgreSQL（共享实例，独立库）----------------
     DB_HOST: str = "localhost"
-    DB_PORT: int = 5432
+    DB_PORT: int = 15432        # 本项目自带 chatbi-pg 的宿主机端口（见 docker/docker-compose.yml）
     DB_USER: str = "rdagent"
     DB_PASSWORD: str = "rdagent123"
     DB_NAME: str = "rd_chatbi"
@@ -42,25 +42,44 @@ class Settings(BaseSettings):
 
     # ---------------- Redis Stack（会话历史 key 前缀隔离）----------------
     REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
+    REDIS_PORT: int = 16379      # 本项目自带 chatbi-redis
     REDIS_PASSWORD: str = ""
     REDIS_DB: int = 0
 
     # ---------------- Milvus ----------------
     MILVUS_HOST: str = "localhost"
-    MILVUS_PORT: int = 19530
+    MILVUS_PORT: int = 19531     # 本项目自带 chatbi-milvus
 
     # ---------------- Elasticsearch（列值召回）----------------
     ES_HOST: str = "localhost"
     ES_PORT: int = 9200
 
     # ---------------- 模型 ----------------
+    # ★ 全链路单模型。CHAT_* 三件套必须指向同一服务商：
+    #   CHAT_API_KEY_ENV 决定从哪个环境变量取 key，默认对应 DeepSeek。
+    # ★ 模型名的唯一权威是 `GET /v1/models`（实测 5 次稳定只返回
+    #   `deepseek-flash` 与 `deepseek-v4-pro`）。别信 OpenRouter 的 id ——
+    #   它有 `deepseek/deepseek-v4.1-flash`，官方 API 对这个名字直接 400；
+    #   `deepseek-v4-flash` 则是解析到 deepseek-flash 的别名（响应里 model
+    #   字段回的就是 deepseek-flash）。
+    # ★ deepseek-flash 原生支持图片（实测能识别 PNG 颜色），v4-pro 不支持 ——
+    #   所以「视觉」不需要第二个模型。但本项目当前**没有任何多模态入口**
+    #   （无图片上传、无截图入参），这个能力只是留给未来的余量，现在用不到。
+    # ★ 曾按「重活/轻活」分两档，已删除：官方只提供这两个模型，v4-pro 是纯
+    #   文本且延迟约 2.4×（实测 2.6s vs 1.1s），拿它当重活档等于用更慢的模型
+    #   换一个未验证的收益。分档要有第二个模型才有意义，现在没有。
+    # ★ Embedding **不能**跟着换：DeepSeek 无 embedding 接口，且 Milvus 里
+    #   现存向量全是 DashScope text-embedding-v3 的 1024 维。
+    CHAT_API_KEY_ENV: str = "DEEPSEEK_API_KEY"
+    CHAT_MODEL: str = "deepseek-flash"
+    BASE_URL_CHAT: str = "https://api.deepseek.com/v1"
+
+    # DashScope 仅用于 embedding（LLM 已切 DeepSeek，见上）
     DASHSCOPE_API_KEY: str = ""
-    BASE_URL_CHAT: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    CHAT_MODEL: str = "qwen-max"
     EMBEDDING_MODEL: str = "text-embedding-v3"
 
     DEEPSEEK_API_KEY: str = ""
+    # 兼容旧 .env；默认 LLM 走 CHAT_MODEL，本项已不再被读取
     DEEPSEEK_MODEL: str = "deepseek-chat"
 
     # LLM 请求超时/重试：不设上限的话 LLM 挂起会无限占用 SSE 连接与工作协程
@@ -68,8 +87,10 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 1
 
     # ---------------- 模型定价（USD/1M tokens）----------------
-    MODEL_PRICING_INPUT: float = 0.4   # qwen-max 输入 $0.4/1M
-    MODEL_PRICING_OUTPUT: float = 1.2  # qwen-max 输出 $1.2/1M
+    # 对应上面的 CHAT_MODEL = deepseek-v4.1-flash。
+    # ★ 换模型必须同步改这里，否则 token 成本指标 / 退款核算全错。
+    MODEL_PRICING_INPUT: float = 0.15
+    MODEL_PRICING_OUTPUT: float = 0.60
 
     # ---------------- NL2SQL（查询 demo 医院运营库）----------------
     DEMO_DB_USER: str = "rdagent"

@@ -28,7 +28,7 @@ class UserContext:
     """
     user_id: str
     session_id: str = ""
-    project_id: str = "rd_agent"        # 数据源编码（bi_datasources.code）；默认汽车/ALM 场景
+    project_id: str = "auto_full"       # 数据源编码（bi_datasources.code）；默认汽车全域百表库
     role: str = "patient"               # 角色编码，规则见 bi_datasources.role_rules
     dept_id: int | None = None          # 医院场景：doctor 所属科室
     owner_domain_id: int | None = None  # ALM 场景：engineer 所属责任域
@@ -39,7 +39,7 @@ async def get_current_user(
     authorization: str = Header("", alias="Authorization"),
     x_user_id: str = Header("", alias="X-User-Id"),
     x_session_id: str = Header("", alias="X-Session-Id"),
-    x_project_id: str = Header("rd_agent", alias="X-Project-Id"),
+    x_project_id: str = Header("auto_full", alias="X-Project-Id"),
     x_user_role: str = Header("patient", alias="X-User-Role"),
     x_dept_id: int | None = Header(None, alias="X-Dept-Id"),
     x_owner_domain_id: int | None = Header(None, alias="X-Owner-Domain-Id"),
@@ -85,7 +85,7 @@ def _user_from_jwt(authorization: str, settings) -> UserContext:
     return UserContext(
         user_id=str(claims.get("sub") or claims.get("user_id") or ""),
         session_id=str(claims.get("sid", "")),
-        project_id=claims.get("project_id") or "rd_agent",
+        project_id=claims.get("project_id") or "auto_full",
         role=claims.get("role", "patient"),
         dept_id=_claim_int(claims, "dept_id"),
         owner_domain_id=_claim_int(claims, "owner_domain_id"),

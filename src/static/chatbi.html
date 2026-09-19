@@ -277,7 +277,7 @@ body {
    ══════════════════════════════════════════════════════════════ */
 const BASE = location.origin;
 const store = {
-  project: localStorage.getItem('chatbi_project') || 'rd_agent',
+  project: localStorage.getItem('chatbi_project') || 'auto_full',
   role: localStorage.getItem('chatbi_role') || 'admin',
   // 角色参数值（doctor→科室ID / engineer→责任域ID / business→业务线）。
   // 按 {数据源: {角色: 值}} 存，否则切数据源会把上个场景的值带过去。
@@ -299,6 +299,7 @@ const STEPS = [
   {key:'召回字段', icon:'📡'},
   {key:'召回字段取值', icon:'🔗'},
   {key:'召回指标', icon:'📐'},
+  {key:'召回相似示例', icon:'💡'},
   {key:'合并召回信息', icon:'🧩'},
   {key:'过滤表格', icon:'🪟'},
   {key:'过滤指标', icon:'🧮'},
@@ -339,7 +340,7 @@ async function loadDatasources() {
     const sel = document.getElementById('dsSelect');
     sel.innerHTML = list.map(d => `<option value="${escHtml(d.code)}">${escHtml(d.name)}</option>`).join('');
     sel.value = store.project;
-    if (sel.selectedIndex < 0) { sel.value = list[0]?.code || 'rd_agent'; store.project = sel.value; }
+    if (sel.selectedIndex < 0) { sel.value = list[0]?.code || 'auto_full'; store.project = sel.value; }
     // 缓存各数据源的角色清单，切换时据此重渲染角色下拉
     store.rolesByDs = Object.fromEntries(list.map(d => [d.code, d.roles || []]));
     renderRoles();
@@ -515,6 +516,21 @@ async function sendQuestion() {
             continue;
           }
 
+          // 结果事件：成功的查询结果（execute_sql 下发）或失败的兜底说明（如拒答）
+          if (payload.type === 'result' && payload.data) {
+            const d = payload.data;
+            lastResult = {
+              success: !d.error,
+              sql: d.sql || '',
+              data: d.data || [],
+              columns: d.columns || [],
+              row_count: d.row_count || 0,
+              summary: d.summary || '',
+              error: d.error || '',
+            };
+            continue;
+          }
+
           // 错误事件
           if (payload.node === 'error') {
             lastResult = {success:false, error: payload.data?.error || '执行失败'};
@@ -566,7 +582,7 @@ function appendAIMsgShell(msgId, q) {
     <div class="msg msg-ai" id="${msgId}">
       <div class="who"><span class="dot"></span> rd-chatBI</div>
       <div class="result-card">
-        <div class="rc-header">9 阶段流水线执行中…</div>
+        <div class="rc-header">NL2SQL 流水线执行中…</div>
         <div class="rc-body">
           <div class="pipeline-progress" id="${msgId}-progress">${progressStepsHTML}</div>
           <div id="${msgId}-body" style="margin-top:16px;"></div>
@@ -610,8 +626,22 @@ function renderBIResult(msgId, data, chart, chartConfig) {
   if (data.summary) {
     html += `<div class="bi-section"><div class="bi-label">📋 数据摘要</div><div class="summary-text">${escHtml(data.summary)}</div></div>`;
   }
-  // 图表
-  if (chart) {
+  // 图表：table 类型不走 ECharts（它不是合法 option，硬塞只会渲染空白容器）。
+  // 单行单列的计数结果渲染成大数字 KPI 卡片；多行则跳过图表区（下方数据表已展示）。
+  const isTableChart = chartType === 'table' || (chart && chart.chart_type === 'table');
+  if (chart && isTableChart) {
+    const rows = chart.data || data.data || [];
+    const first = rows[0] || {};
+    const keys = Object.keys(first);
+    if (rows.length === 1 && keys.length === 1) {
+      const val = first[keys[0]];
+      html += `<div class="bi-section"><div class="bi-label">📈 结果${chartType ? `<span class="chart-type-tag">KPI</span>` : ''}</div>`
+        + `<div style="text-align:center;padding:14px 0 6px">`
+        + `<div style="font-size:40px;font-weight:700;color:#1a1a2e;line-height:1.2">${escHtml(String(val ?? ''))}</div>`
+        + `<div style="font-size:13px;color:#777;margin-top:4px">${escHtml(chart.title || keys[0])}（${escHtml(keys[0])}）</div>`
+        + `</div></div>`;
+    }
+  } else if (chart) {
     html += `<div class="bi-section"><div class="bi-label">📈 图表${chartType ? `<span class="chart-type-tag">${escHtml(chartType)}</span>` : ''}</div><div class="chart-container" id="${msgId}-chart"></div></div>`;
   }
   // 数据表
@@ -639,8 +669,8 @@ function renderBIResult(msgId, data, chart, chartConfig) {
   });
   bindFeedback(msgId, body);
 
-  // ECharts 渲染
-  if (chart) {
+  // ECharts 渲染（table 类型已在上面走 KPI/跳过分支，不进这里）
+  if (chart && !isTableChart) {
     setTimeout(()=>{
       const chartEl = document.getElementById(msgId+'-chart');
       if (chartEl && typeof echarts !== 'undefined') {

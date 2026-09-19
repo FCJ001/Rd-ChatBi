@@ -36,7 +36,7 @@ async def _admin_roles(project_id: str) -> set[str]:
 
 async def require_badcase_admin(
     authorization: str = Header("", alias="Authorization"),
-    x_project_id: str = Header("rd_agent", alias="X-Project-Id"),
+    x_project_id: str = Header("auto_full", alias="X-Project-Id"),
 ) -> str:
     """返回审核人标识（落 reviewer 字段）。无权/未配置一律拒绝。"""
     settings = get_settings()
