@@ -31,10 +31,10 @@ jobs:
       - name: NL2SQL offline eval gate
         run: python eval/run_nl2sql_eval.py
 
-  # hospital_demo 的 golden_sql 在真实库上跑通才算数。
+  # auto_full 的 golden_sql 在真实库上跑通才算数。
   #
-  # ★ 为什么只测 hospital_demo：它的库和造数脚本都在本仓库
-  #   （scripts/init_demo_data.py），CI 能从零建出来。
+  # ★ 为什么能测 auto_full：库和造数脚本都在本仓库（scripts/gen_auto_full.py，
+  #   generate_series 确定性灌数 ~200 万行，秒级），CI 能从零建出来。
   #   rd_agent 的 schema 属于兄弟仓库 rd-agent-platform（本仓库不持有其建表 DDL），
   #   在这里伪造一份建表脚本会跟真实 schema 漂移，反而制造假通过 ——
   #   所以 rd_agent 的实况校验留在本地/部署环境跑：
@@ -70,9 +70,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 建库 + 造数 + 校验 40 条 hospital_demo 案例的 golden SQL
-      - name: Init demo data
-        run: python scripts/init_demo_data.py --drop
+      # 建库 + 灌数（~200 万行确定性种子）+ 校验全部案例的 golden SQL
+      - name: Generate auto_full database
+        run: python scripts/gen_auto_full.py --execute
 
-      - name: Verify hospital_demo cases against live DB
-        run: python scripts/make_hospital_cases.py
+      - name: Verify auto_full cases against live DB
+        run: python scripts/verify_cases.py --datasource auto_full

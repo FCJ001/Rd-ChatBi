@@ -46,11 +46,26 @@ class Tab:
 
 
 # ── 常用种子表达式 ──────────────────────────────────────────
-# 时间窗：2025-09-01 ~ 2026-09-17 均匀铺开（381 天），保证"近7天/近30天/上月"都有数据
-TS = "TIMESTAMP '2025-09-01' + (({i} * 7) % 381) * INTERVAL '1 day' + ({i} % 24) * INTERVAL '1 hour'"
-# 相关时间列（updated/ended/finished…）：与 TS 同日基 + 10~190 分钟，保证晚于 TS 生成的时间列
-TS2 = "TIMESTAMP '2025-09-01' + (({i} * 7) % 380) * INTERVAL '1 day' + ({i} % 24) * INTERVAL '1 hour' + ((({i} * 13) % 180) + 10) * INTERVAL '1 minute'"
-DAY = "DATE '2025-09-01' + (({i} * 7) % 381) * INTERVAL '1 day'"
+# 时间窗：2025-09-01（周一）起 54 个整周（至 2026-09-13），保证"近7天/近30天/上月"都有数据
+#
+# ★ 周末低谷（数据体检实测缺失项，2026-09-20 修）：旧公式 (i*7)%381 把行均匀
+#   铺到每一天，按星期几的分布完全平坦（2018/2087/2087/…）—— 真实业务的
+#   周末客流/产量有明显低谷。新公式用行号散列做两层映射：先取第几周
+#   （0..53），再按 82/18 落到周中（周一~周五）或周末（周六/日）。
+#   周末单日量 ≈ 周中的 55%（18%/2 ÷ 82%/5），按星期几聚合呈「周末双坑」。
+#
+# ★ 日偏移不掺盐（{salt}）：同一行的所有时间列必须落在同一天 —— TS2 与 TS
+#   用同一个日偏移表达式，只加 10~190 分钟，保证 finished_at > intake_at
+#   这类行内时序约束。旧 TS2 用 (%380) 与 TS 的 (%381) 不同模，个别行会
+#   出现完工早于进厂一天以上的脏数据。
+_H = "((({i} * 2654435761) % 4294967296))"
+_WEEK = f"(({_H} / 5400) % 54)"
+_SLOT = f"({_H} % 100)"
+_DAY_OFF = f"({_WEEK} * 7 + CASE WHEN {_SLOT} < 82 THEN {_SLOT} % 5 ELSE 5 + {_SLOT} % 2 END)"
+TS = f"TIMESTAMP '2025-09-01' + {_DAY_OFF} * INTERVAL '1 day' + ({{i}} % 24) * INTERVAL '1 hour'"
+# 相关时间列（updated/ended/finished…）：与 TS 同日 + 10~190 分钟，保证晚于 TS
+TS2 = f"TIMESTAMP '2025-09-01' + {_DAY_OFF} * INTERVAL '1 day' + ({{i}} % 24) * INTERVAL '1 hour' + ((({{i}} * 13) % 180) + 10) * INTERVAL '1 minute'"
+DAY = f"DATE '2025-09-01' + {_DAY_OFF} * INTERVAL '1 day'"
 MON = "DATE '2025-09-01' + (({i} * 3) % 13) * INTERVAL '1 month'"  # 月度粒度
 NO = lambda p, w=7: f"'{p}' || lpad({{i}}::text, {w}, '0')"  # noqa: E731
 def ARR(vals, cast=""):  # noqa: E731
@@ -1058,7 +1073,11 @@ def tables() -> list[Tab]:
             M("mileage", "进厂里程（公里）", NUM(500, 190000, 10, 0), alias=["里程", "进厂里程"], type="INTEGER"),
             M("labor_hours", "维修工时（小时）", NUM(5, 80, 10, 1), alias=["工时", "维修工时"]),
             D("intake_at", "TIMESTAMP", "进厂时间", TS, alias=["进厂时间", "时间"]),
-            D("finished_at", "TIMESTAMP", "完工时间", TS2, alias=["完工时间"]),
+            # ★ 完工时间与状态对齐地可空：status 按 i%4 落「已创建/维修中/已完工/已结算」，
+            #   i%4<2 即前两个未完工状态 → finished_at 为 NULL（各 50%）。生产语义下
+            #   「还有多少工单没修完」必须能答（数据体检实测：空值率 0% 是假象之一）。
+            D("finished_at", "TIMESTAMP", "完工时间（未完成为 NULL）",
+              "CASE WHEN {i} % 4 < 2 THEN NULL ELSE " + TS2 + " END", alias=["完工时间"]),
         ]),
         Tab("svc_wo_labor_items", "fact", "工单工时项目", 55000, [
             PK(),

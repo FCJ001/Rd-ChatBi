@@ -5,7 +5,7 @@
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence
+from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence, strip_value_labels
 from src.nl2sql.state import DataAgentState
 from src.nl2sql.context import DataAgentContext
 from src.nl2sql.prompt_loader import load_prompt
@@ -46,7 +46,7 @@ async def correct_sql(state: DataAgentState, ctx: DataAgentContext) -> dict:
             HumanMessage(content="请根据错误信息修正上述 SQL"),
         ])
 
-        sql = strip_code_fence(response.content)
+        sql = strip_value_labels(strip_code_fence(response.content))
 
         from src.core.logger import logger
         logger.info(f"[correct_sql] 纠错后 SQL ({len(sql)} 字符): {sql[:200]}")

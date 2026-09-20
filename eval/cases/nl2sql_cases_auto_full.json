@@ -117,15 +117,15 @@
       "id": "AUF23",
       "category": "时间窗口",
       "difficulty": "easy",
-      "question": "最近 7 天发生了多少次 OTA 安装失败？",
-      "golden_sql": "SELECT COUNT(*) AS cnt FROM ota_install_failures WHERE occurred_at >= CURRENT_DATE - INTERVAL '6 days'"
+      "question": "2026年9月7日到9月13日这一周发生了多少次 OTA 安装失败？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM ota_install_failures WHERE occurred_at >= '2026-09-07' AND occurred_at < '2026-09-14'"
     },
     {
       "id": "AUF24",
       "category": "时间窗口",
       "difficulty": "medium",
-      "question": "昨天的产线安灯事件有多少次？",
-      "golden_sql": "SELECT COUNT(*) AS cnt FROM mfg_andon_events WHERE occurred_at >= date_trunc('day', now()) - INTERVAL '1 day' AND occurred_at < date_trunc('day', now())"
+      "question": "2026年9月10日当天的产线安灯事件有多少次？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM mfg_andon_events WHERE occurred_at >= '2026-09-10' AND occurred_at < '2026-09-11'"
     },
     {
       "id": "AUF25",
@@ -194,8 +194,8 @@
       "id": "AUF36",
       "category": "明细查询",
       "difficulty": "hard",
-      "question": "列出比亚迪品牌当前在库的整车明细，包括款型、颜色和生产工厂",
-      "golden_sql": "SELECT t.name AS trim, c.name AS color, p.name AS plant, v.build_date FROM veh_vehicles v JOIN veh_trims t ON v.trim_id = t.id JOIN veh_models m ON t.model_id = m.id JOIN veh_model_series s ON m.series_id = s.id JOIN veh_brands b ON s.brand_id = b.id JOIN veh_colors c ON v.color_id = c.id JOIN mfg_plants p ON v.plant_id = p.id WHERE b.name = '比亚迪' AND v.status = '在库' LIMIT 20"
+      "question": "列出特斯拉品牌当前在库的整车明细，包括款型、颜色和生产工厂",
+      "golden_sql": "SELECT t.name AS trim, c.name AS color, p.name AS plant, v.build_date FROM veh_vehicles v JOIN veh_trims t ON v.trim_id = t.id JOIN veh_models m ON t.model_id = m.id JOIN veh_model_series s ON m.series_id = s.id JOIN veh_brands b ON s.brand_id = b.id JOIN veh_colors c ON v.color_id = c.id JOIN mfg_plants p ON v.plant_id = p.id WHERE b.name = '特斯拉' AND v.status = '在库' LIMIT 20"
     },
     {
       "id": "AUF37",
@@ -244,8 +244,8 @@
       "id": "AUF43",
       "category": "时间窗口",
       "difficulty": "hard",
-      "question": "今天有多少张销售订单？",
-      "golden_sql": "SELECT COUNT(*) AS cnt FROM sal_sales_orders WHERE created_at >= date_trunc('day', now()) AND created_at < date_trunc('day', now()) + INTERVAL '1 day'",
+      "question": "2026年9月11日当天有多少张销售订单？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM sal_sales_orders WHERE created_at >= '2026-09-11' AND created_at < '2026-09-12'",
       "_note": "★ 这个案例记录的是一类**系统性缺陷**而非能力题：所有种子表的 时间上界都停在生成脚本跑的那天（实测 2026-09-16），而 now() 永远在其之后， 所以窗口必为空 → 0。危险不在 0 本身，而在摘要会把它解释成业务事实（实测原话：「本月17号销量归零…呈断崖式下滑」）。 它属于「空结果集案例有害」那一类：判分上是 0 行 = 0 行，恒过， 但语义上系统给了一个错误结论。修法是给 runtime 注入数据上界（见 §9.3）。"
     },
     {
@@ -449,6 +449,244 @@
       "question": "按服务中心统计的维修工单数和平均工时",
       "golden_sql": "SELECT sc.name AS service_center, COUNT(*) AS wo_cnt, ROUND(AVG(wo.labor_hours),2) AS avg_hours FROM svc_work_orders wo JOIN svc_service_centers sc ON wo.service_center_id = sc.id GROUP BY sc.name ORDER BY wo_cnt DESC, sc.name ASC",
       "_note": "排序键用离散枚举列 —— 值少但必然无并列，避免「取前N」的截断歧义"
+    },
+    {
+      "id": "AP01",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "还有多少维修工单尚未完工？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM svc_work_orders WHERE finished_at IS NULL"
+    },
+    {
+      "id": "AP02",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "处于停业状态的经销商有多少家？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM sal_dealers WHERE status = '停业'"
+    },
+    {
+      "id": "AP03",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "平均每次充电大概充了多少度电？",
+      "golden_sql": "SELECT AVG(energy_kwh) AS avg_kwh FROM iot_charging_sessions"
+    },
+    {
+      "id": "AP04",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "初级技师一共有多少名？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM svc_mechanics WHERE skill_level = '初级'"
+    },
+    {
+      "id": "AP05",
+      "category": "单表聚合",
+      "difficulty": "easy",
+      "question": "待付款状态的销售订单有多少张？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM sal_sales_orders WHERE status = '待付款'"
+    },
+    {
+      "id": "AP06",
+      "category": "分组统计",
+      "difficulty": "easy",
+      "question": "按工单状态统计维修工单的数量",
+      "golden_sql": "SELECT status, COUNT(*) AS cnt FROM svc_work_orders GROUP BY status ORDER BY status"
+    },
+    {
+      "id": "AP07",
+      "category": "分组统计",
+      "difficulty": "medium",
+      "question": "工作日和周末的充电记录分别有多少条？",
+      "golden_sql": "SELECT CASE WHEN EXTRACT(ISODOW FROM started_at) >= 6 THEN '周末' ELSE '工作日' END AS day_type,\n       COUNT(*) AS cnt\nFROM iot_charging_sessions\nGROUP BY 1 ORDER BY 1"
+    },
+    {
+      "id": "AP08",
+      "category": "分组统计",
+      "difficulty": "medium",
+      "question": "各工单类型里还有多少工单没完工？",
+      "golden_sql": "SELECT wo_type, COUNT(*) AS unfinished_cnt\nFROM svc_work_orders\nWHERE finished_at IS NULL\nGROUP BY wo_type ORDER BY wo_type"
+    },
+    {
+      "id": "AP09",
+      "category": "分组统计",
+      "difficulty": "easy",
+      "question": "研发缺陷问题单按状态分布，各有多少条？",
+      "golden_sql": "SELECT status, COUNT(*) AS cnt FROM alm_issues GROUP BY status ORDER BY status"
+    },
+    {
+      "id": "AP10",
+      "category": "分组统计",
+      "difficulty": "medium",
+      "question": "各动力类型下分别有多少个车型？",
+      "golden_sql": "SELECT e.name AS energy_type, COUNT(*) AS model_cnt\nFROM veh_models m\nJOIN veh_energy_types e ON m.energy_type_id = e.id\nGROUP BY e.name ORDER BY e.name"
+    },
+    {
+      "id": "AP11",
+      "category": "分组统计",
+      "difficulty": "easy",
+      "question": "各城市分别有多少家经销商？",
+      "golden_sql": "SELECT city, COUNT(*) AS dealer_cnt FROM sal_dealers GROUP BY city ORDER BY city"
+    },
+    {
+      "id": "AP12",
+      "category": "时间窗口",
+      "difficulty": "medium",
+      "question": "2026年8月进厂的维修工单有多少张？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM svc_work_orders\nWHERE intake_at >= '2026-08-01' AND intake_at < '2026-09-01'"
+    },
+    {
+      "id": "AP13",
+      "category": "时间窗口",
+      "difficulty": "medium",
+      "question": "2026年7月1日到8月31日（暑假）总共充了多少度电？",
+      "golden_sql": "SELECT SUM(energy_kwh) AS total_kwh FROM iot_charging_sessions\nWHERE started_at >= '2026-07-01' AND started_at < '2026-09-01'"
+    },
+    {
+      "id": "AP14",
+      "category": "时间窗口",
+      "difficulty": "medium",
+      "question": "2025年第四季度每个月分别卖出了多少张销售订单？",
+      "golden_sql": "SELECT date_trunc('month', created_at) AS mon, COUNT(*) AS cnt\nFROM sal_sales_orders\nWHERE created_at >= '2025-10-01' AND created_at < '2026-01-01'\nGROUP BY date_trunc('month', created_at) ORDER BY mon"
+    },
+    {
+      "id": "AP15",
+      "category": "时间窗口",
+      "difficulty": "hard",
+      "question": "2026年6月1日到6月18日（618大促）的销售订单总金额和订单数是多少？",
+      "golden_sql": "SELECT SUM(amount) AS total_amount, COUNT(*) AS order_cnt\nFROM sal_sales_orders\nWHERE created_at >= '2026-06-01' AND created_at < '2026-06-19'"
+    },
+    {
+      "id": "AP16",
+      "category": "时间窗口",
+      "difficulty": "hard",
+      "question": "2026年8月15日到9月15日期间，周末进厂的维修工单有多少张？",
+      "golden_sql": "SELECT COUNT(*) AS cnt FROM svc_work_orders\nWHERE intake_at >= '2026-08-15' AND intake_at < '2026-09-16'\n  AND EXTRACT(ISODOW FROM intake_at) >= 6"
+    },
+    {
+      "id": "AP17",
+      "category": "时间窗口",
+      "difficulty": "medium",
+      "question": "2025年10月到12月每月的 OTA 安装失败次数分别是多少？",
+      "golden_sql": "SELECT date_trunc('month', occurred_at) AS mon, COUNT(*) AS cnt\nFROM ota_install_failures\nWHERE occurred_at >= '2025-10-01' AND occurred_at < '2026-01-01'\nGROUP BY date_trunc('month', occurred_at) ORDER BY mon"
+    },
+    {
+      "id": "AP18",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "各动力类型的维修工单分别有多少张？",
+      "golden_sql": "SELECT e.name AS energy_type, COUNT(*) AS wo_cnt\nFROM svc_work_orders w\nJOIN veh_vehicles v ON w.vehicle_id = v.id\nJOIN veh_trims t ON v.trim_id = t.id\nJOIN veh_models m ON t.model_id = m.id\nJOIN veh_energy_types e ON m.energy_type_id = e.id\nGROUP BY e.name ORDER BY e.name"
+    },
+    {
+      "id": "AP19",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "各服务中心还有多少张维修工单没完工？",
+      "golden_sql": "SELECT c.name AS center, COUNT(*) AS unfinished_cnt\nFROM svc_work_orders w\nJOIN svc_service_centers c ON w.service_center_id = c.id\nWHERE w.finished_at IS NULL\nGROUP BY c.name ORDER BY c.name"
+    },
+    {
+      "id": "AP20",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "各品牌的已交付订单分别有多少张？",
+      "golden_sql": "SELECT b.name AS brand, COUNT(*) AS delivered_cnt\nFROM sal_sales_orders o\nJOIN veh_trims t ON o.trim_id = t.id\nJOIN veh_models m ON t.model_id = m.id\nJOIN veh_model_series s ON m.series_id = s.id\nJOIN veh_brands b ON s.brand_id = b.id\nWHERE o.status = '已交付'\nGROUP BY b.name ORDER BY b.name"
+    },
+    {
+      "id": "AP21",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "各车型的平均进厂里程是多少公里？",
+      "golden_sql": "SELECT m.name AS model, ROUND(AVG(w.mileage), 2) AS avg_mileage\nFROM svc_work_orders w\nJOIN veh_vehicles v ON w.vehicle_id = v.id\nJOIN veh_trims t ON v.trim_id = t.id\nJOIN veh_models m ON t.model_id = m.id\nGROUP BY m.name ORDER BY m.name"
+    },
+    {
+      "id": "AP22",
+      "category": "多表JOIN",
+      "difficulty": "medium",
+      "question": "各车系的平均试驾评分是多少？",
+      "golden_sql": "SELECT s.name AS series, AVG(td.score) AS avg_score\nFROM sal_test_drives td\nJOIN veh_models m ON td.model_id = m.id\nJOIN veh_model_series s ON m.series_id = s.id\nGROUP BY s.name ORDER BY s.name"
+    },
+    {
+      "id": "AP23",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "2026年上半年各品牌分别收到了多少张销售订单？",
+      "golden_sql": "SELECT b.name AS brand, COUNT(*) AS order_cnt\nFROM sal_sales_orders o\nJOIN veh_trims t ON o.trim_id = t.id\nJOIN veh_models m ON t.model_id = m.id\nJOIN veh_model_series s ON m.series_id = s.id\nJOIN veh_brands b ON s.brand_id = b.id\nWHERE o.created_at >= '2026-01-01' AND o.created_at < '2026-07-01'\nGROUP BY b.name ORDER BY b.name"
+    },
+    {
+      "id": "AP24",
+      "category": "多表JOIN",
+      "difficulty": "medium",
+      "question": "机电维修类型的工单，各服务中心分别承担了多少张？",
+      "golden_sql": "SELECT c.name AS center, COUNT(*) AS wo_cnt\nFROM svc_work_orders w\nJOIN svc_service_centers c ON w.service_center_id = c.id\nWHERE w.wo_type = '机电维修'\nGROUP BY c.name ORDER BY c.name"
+    },
+    {
+      "id": "AP25",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "各城市的试驾次数分别是多少？",
+      "golden_sql": "SELECT d.city AS city, COUNT(*) AS drive_cnt\nFROM sal_test_drives td\nJOIN sal_dealers d ON td.dealer_id = d.id\nGROUP BY d.city ORDER BY d.city"
+    },
+    {
+      "id": "AP26",
+      "category": "多表JOIN",
+      "difficulty": "hard",
+      "question": "各品牌的三电维修工单分别有多少张？",
+      "golden_sql": "SELECT b.name AS brand, COUNT(*) AS wo_cnt\nFROM svc_work_orders w\nJOIN veh_vehicles v ON w.vehicle_id = v.id\nJOIN veh_trims t ON v.trim_id = t.id\nJOIN veh_models m ON t.model_id = m.id\nJOIN veh_model_series s ON m.series_id = s.id\nJOIN veh_brands b ON s.brand_id = b.id\nWHERE w.wo_type = '三电维修'\nGROUP BY b.name ORDER BY b.name"
+    },
+    {
+      "id": "AP27",
+      "category": "排序TopN",
+      "difficulty": "hard",
+      "question": "工单量最大的前3个服务中心是哪些？列出名称和工单数",
+      "golden_sql": "SELECT c.name AS center, COUNT(*) AS wo_cnt\nFROM svc_work_orders w\nJOIN svc_service_centers c ON w.service_center_id = c.id\nGROUP BY c.name ORDER BY wo_cnt DESC LIMIT 3"
+    },
+    {
+      "id": "AP28",
+      "category": "排序TopN",
+      "difficulty": "hard",
+      "question": "未完工工单最多的前5个服务中心是哪些？",
+      "golden_sql": "SELECT c.name AS center, COUNT(*) AS unfinished_cnt\nFROM svc_work_orders w\nJOIN svc_service_centers c ON w.service_center_id = c.id\nWHERE w.finished_at IS NULL\nGROUP BY c.name ORDER BY unfinished_cnt DESC LIMIT 5"
+    },
+    {
+      "id": "AP29",
+      "category": "排序TopN",
+      "difficulty": "medium",
+      "question": "充电量最大的前3个城市是哪些？列出城市和总电量",
+      "golden_sql": "SELECT city, SUM(energy_kwh) AS total_kwh\nFROM iot_charging_sessions\nGROUP BY city ORDER BY total_kwh DESC LIMIT 3"
+    },
+    {
+      "id": "AP30",
+      "category": "排序TopN",
+      "difficulty": "hard",
+      "question": "卖得最好的前5个车型（款型）是哪些？按订单数排",
+      "golden_sql": "SELECT t.name AS trim, COUNT(*) AS order_cnt\nFROM sal_sales_orders o\nJOIN veh_trims t ON o.trim_id = t.id\nGROUP BY t.name ORDER BY order_cnt DESC LIMIT 5"
+    },
+    {
+      "id": "AP31",
+      "category": "明细查询",
+      "difficulty": "easy",
+      "question": "查一下维修工单 SWO00000001 的状态、进厂时间和完工时间",
+      "golden_sql": "SELECT wo_no, status, intake_at, finished_at\nFROM svc_work_orders WHERE wo_no = 'SWO00000001'"
+    },
+    {
+      "id": "AP32",
+      "category": "明细查询",
+      "difficulty": "medium",
+      "question": "2026年9月1日到9月15日进厂的维修工单，按工单号从小到大列出前10条的工单号和状态",
+      "golden_sql": "SELECT wo_no, status\nFROM svc_work_orders\nWHERE intake_at >= '2026-09-01' AND intake_at < '2026-09-16'\nORDER BY wo_no LIMIT 10"
+    },
+    {
+      "id": "AP33",
+      "category": "明细查询",
+      "difficulty": "easy",
+      "question": "订单 SO00000001 的金额、状态和下单时间是什么？",
+      "golden_sql": "SELECT order_no, amount, status, created_at\nFROM sal_sales_orders WHERE order_no = 'SO00000001'"
+    },
+    {
+      "id": "AP34",
+      "category": "明细查询",
+      "difficulty": "hard",
+      "question": "维修工单 SWO00000042 对应的车辆属于哪个品牌、哪个车系、哪个款型？",
+      "golden_sql": "SELECT b.name AS brand, s.name AS series, t.name AS trim\nFROM svc_work_orders w\nJOIN veh_vehicles v ON w.vehicle_id = v.id\nJOIN veh_trims t ON v.trim_id = t.id\nJOIN veh_models m ON t.model_id = m.id\nJOIN veh_model_series s ON m.series_id = s.id\nJOIN veh_brands b ON s.brand_id = b.id\nWHERE w.wo_no = 'SWO00000042'"
     }
   ]
 }

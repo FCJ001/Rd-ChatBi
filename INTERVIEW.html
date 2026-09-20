@@ -122,7 +122,7 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 <p>一句话：<strong>自然语言查业务库的 Text-to-SQL 平台</strong> —— 多数据源路由 + 9 阶段 LangGraph RAG 流水线 + 四层 SQL 安全防线 + 图表推荐（服务端出 ECharts option，前端渲染）。</p>
 <p>📖 <strong>HTML 版</strong>（带渲染好的图，浏览器直接打开）：<a href="INTERVIEW.html">INTERVIEW.html</a>
 🗣️ <strong>面试前十分钟只看这份</strong>：<a href="SPEAK.md">SPEAK.md</a>（口述版速记，别背长文）</p>
-<p>代码量：<code>src/</code> 约 7400 行，<code>tests/</code> 约 3200 行，<strong>104 条分层评测案例</strong>（auto_full 百表库 63 + hospital_demo 40 + 回流 1）。<strong>245 个单测全绿，离线门禁 104/104。</strong></p>
+<p>代码量：<code>src/</code> 约 7400 行，<code>tests/</code> 约 3200 行，<strong>97 条分层评测案例</strong>（全部在 auto_full 百表生产库上）。<strong>257 个单测全绿，离线门禁 97/97。</strong></p>
 </blockquote>
 <hr>
 <h2 id="0-目录">0. 目录</h2>
@@ -146,14 +146,14 @@ tr:nth-child(even) td { background:color-mix(in srgb, var(--code-bg) 45%, transp
 <h2 id="一开场">一、开场</h2>
 <h3 id="30-秒版">30 秒版</h3>
 <p>「我做的这个项目叫 rd-chatBI，是一个 NL2SQL 智能分析平台。业务同学用自然语言提问，比如『各责任域的问题单数量排名』，系统自动生成 SQL、查库、返回数据表 + 图表 + 文字摘要。</p>
-<p>技术上有三个重点：一是用 LangGraph 编排了一条 9 阶段的 RAG 流水线，通过 <strong>三层元数据召回</strong>（向量库召回字段、ES 召回字段值、向量库召回指标）解决大模型不懂业务表结构的问题；二是设计了 <strong>四层 SQL 安全防线</strong>，用 sqlglot 在 AST 层做 SELECT-only 校验、LIMIT 钳制、行级权限注入，因为 LLM 生成的 SQL 本质是不可信输入；三是做了 <strong>执行准确率评测门禁</strong>，104 条分层案例跑进了 CI，其中离线门禁是纯函数、不连库，每条标准答案的 SQL 必须先过安全层。」</p>
+<p>技术上有三个重点：一是用 LangGraph 编排了一条 9 阶段的 RAG 流水线，通过 <strong>三层元数据召回</strong>（向量库召回字段、ES 召回字段值、向量库召回指标）解决大模型不懂业务表结构的问题；二是设计了 <strong>四层 SQL 安全防线</strong>，用 sqlglot 在 AST 层做 SELECT-only 校验、LIMIT 钳制、行级权限注入，因为 LLM 生成的 SQL 本质是不可信输入；三是做了 <strong>执行准确率评测门禁</strong>，97 条分层案例跑进了 CI，其中离线门禁是纯函数、不连库，每条标准答案的 SQL 必须先过安全层。」</p>
 <h3 id="2-分钟版">2 分钟版</h3>
 <p>在 30 秒版基础上补：</p>
 <ul>
 <li><strong>为什么不能用「把 schema 塞进 prompt」的朴素做法</strong>：汽车/ALM 库有几十张表、几百个字段，全塞进去 prompt 超长、成本高、模型还容易选错表。所以走 RAG：先召回候选表和字段，再用 LLM 过滤到最小集合，最后才生成 SQL。</li>
 <li><strong>为什么安全要单独做一层</strong>：LLM 输出不可信，且用户会通过 prompt 注入诱导 LLM 写越权 SQL（比如「查所有责任域的数据」）。只靠 prompt 里写「不要查敏感字段」是不够的，必须代码层强校验。</li>
 <li><strong>多数据源</strong>：主数据源是<strong>汽车全域百表库</strong>（<code>auto_full</code>，127 张表），另配一份医院演示库（<code>hospital_demo</code>）用来验证「同一份代码换一套角色模型」。按请求头 <code>X-Project-Id</code> 路由到不同的库、不同的向量 collection、不同的权限规则。</li>
-<li><strong>效果</strong>：104 条案例（两个数据源）全过离线安全门禁，实况 exec-match 执行准确率按 <code>category × difficulty</code> 分层统计。</li>
+<li><strong>效果</strong>：97 条案例全过离线安全门禁，实况 exec-match 执行准确率按 <code>category × difficulty</code> 分层统计。</li>
 </ul>
 <h3 id="10-分钟版">10 分钟版</h3>
 <p>按本文档第四、五、七节顺序讲，重点讲流水线为什么这么切、安全防线每一层挡什么。</p>
@@ -999,7 +999,7 @@ python eval/run_nl2sql_eval.py --live   # 实况：需 LLM + 业务库，跑 exe
 </code></pre>
 <p>归一化处理：Decimal/float 按 4 位小数舍入（容忍聚合口径差异）、日期转字符串、字符串 strip、<strong>列名不参与比较</strong>（LLM 的别名与 golden 不同是常态）、<strong>行序不参与比较</strong>（无 ORDER BY 语义的集合等价）。</p>
 <p>按 <code>category × difficulty</code> 出分层统计，默认门限 80%。</p>
-<p><strong>案例分层</strong>（实测计数）：auto_full <strong>63 条</strong>（多表 JOIN 26 / 时间窗口 13 / 分组统计 7 / 排序 TopN 7 / 单表聚合 6 / 明细查询 4）+ hospital_demo <strong>40 条</strong>（单表聚合 9 / 分组统计 8 / 时间窗口 8 / 多表 JOIN 5 / 排序 TopN 5 / 明细查询 5），另有 1 条 badcase 回流案例。<strong>两个数据源合计 104 条过离线门禁。</strong></p>
+<p><strong>案例分层</strong>（实测计数）：auto_full <strong>97 条</strong>（多表 JOIN 35 / 时间窗口 19 / 分组统计 13 / 单表聚合 11 / 排序 TopN 11 / 明细查询 8），另有 1 个空的 badcase 回流槽位（<code>nl2sql_cases_reflow_auto_full.json</code>，随线上 badcase 审核回流增长）。<strong>全部 97 条过离线门禁。</strong></p>
 <h3 id="75-ci--部署">7.5 CI / 部署</h3>
 <pre><code class="language-yaml"># .github/workflows/ci.yml
 - name: Unit tests
@@ -1297,7 +1297,7 @@ golden 是用<strong>原始未钳制的 SQL</strong> 跑的，而预测 SQL 是<
 </ul>
 <p><strong>能跑的命令</strong>（面试时可现场演示）：</p>
 <pre><code class="language-bash">.venv/bin/python -m pytest -q                    # 245 passed, 1 skipped
-.venv/bin/python eval/run_nl2sql_eval.py         # 离线门禁 104/104（auto_full 63 + hospital_demo 40 + 回流 1）
+.venv/bin/python eval/run_nl2sql_eval.py         # 离线门禁 97/97（auto_full）
 uvicorn src.main:app --port 8003                 # 起服务，/docs 有交互文档
 </code></pre>
 

@@ -28,6 +28,28 @@ _LANG_TAGS = ("json", "sql")  # 长的在前，避免 "json" 被 "js" 之类误�
 _CHARS_PER_TOKEN = 1.5
 
 
+# 示例值的中文标注（在线 merge_info 与评测 _schema_with_recalled_values 同款挂载）。
+# ★ 模型偶尔把标注当字面量的一部分抄进 WHERE（实测：库里存 '致命'，生成
+#   WHERE severity = '致命（真实值）'，查出 0 行）—— 在生成后统一剥掉是唯一
+#   可靠的收口：提示词里已有专节解释两种标注的含义，仍拦不住偶发。
+_VALUE_LABELS = ("（真实值）", "（同义词，非库中取值）")
+_QUOTED_LITERAL_RE = re.compile(r"'((?:[^']|'')*)'")
+
+
+def strip_value_labels(sql: str) -> str:
+    """剥掉 SQL 字符串字面量里混入的值标注后缀（只动引号内，不碰其他文本）"""
+    if not sql or not any(label in sql for label in _VALUE_LABELS):
+        return sql
+
+    def _clean(m: re.Match) -> str:
+        inner = m.group(1)
+        for label in _VALUE_LABELS:
+            inner = inner.replace(label, "")
+        return f"'{inner}'"
+
+    return _QUOTED_LITERAL_RE.sub(_clean, sql)
+
+
 def clean_model_output(text: str) -> str:
     """剥离围栏，再把围栏之外的散文去掉，只留 SQL本体。
 

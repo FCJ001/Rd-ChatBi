@@ -5,7 +5,7 @@
 > 📖 **HTML 版**（带渲染好的图，浏览器直接打开）：[INTERVIEW.html](INTERVIEW.html)
 > 🗣️ **面试前十分钟只看这份**：[SPEAK.md](SPEAK.md)（口述版速记，别背长文）
 >
-> 代码量：`src/` 约 7400 行，`tests/` 约 3200 行，**104 条分层评测案例**（auto_full 百表库 63 + hospital_demo 40 + 回流 1）。**245 个单测全绿，离线门禁 104/104。**
+> 代码量：`src/` 约 7400 行，`tests/` 约 3200 行，**97 条分层评测案例**（全部在 auto_full 百表生产库上）。**257 个单测全绿，离线门禁 97/97。**
 
 ---
 
@@ -32,7 +32,7 @@
 
 「我做的这个项目叫 rd-chatBI，是一个 NL2SQL 智能分析平台。业务同学用自然语言提问，比如『各责任域的问题单数量排名』，系统自动生成 SQL、查库、返回数据表 + 图表 + 文字摘要。
 
-技术上有三个重点：一是用 LangGraph 编排了一条 9 阶段的 RAG 流水线，通过 **三层元数据召回**（向量库召回字段、ES 召回字段值、向量库召回指标）解决大模型不懂业务表结构的问题；二是设计了 **四层 SQL 安全防线**，用 sqlglot 在 AST 层做 SELECT-only 校验、LIMIT 钳制、行级权限注入，因为 LLM 生成的 SQL 本质是不可信输入；三是做了 **执行准确率评测门禁**，104 条分层案例跑进了 CI，其中离线门禁是纯函数、不连库，每条标准答案的 SQL 必须先过安全层。」
+技术上有三个重点：一是用 LangGraph 编排了一条 9 阶段的 RAG 流水线，通过 **三层元数据召回**（向量库召回字段、ES 召回字段值、向量库召回指标）解决大模型不懂业务表结构的问题；二是设计了 **四层 SQL 安全防线**，用 sqlglot 在 AST 层做 SELECT-only 校验、LIMIT 钳制、行级权限注入，因为 LLM 生成的 SQL 本质是不可信输入；三是做了 **执行准确率评测门禁**，97 条分层案例跑进了 CI，其中离线门禁是纯函数、不连库，每条标准答案的 SQL 必须先过安全层。」
 
 ### 2 分钟版
 
@@ -41,7 +41,7 @@
 - **为什么不能用「把 schema 塞进 prompt」的朴素做法**：汽车/ALM 库有几十张表、几百个字段，全塞进去 prompt 超长、成本高、模型还容易选错表。所以走 RAG：先召回候选表和字段，再用 LLM 过滤到最小集合，最后才生成 SQL。
 - **为什么安全要单独做一层**：LLM 输出不可信，且用户会通过 prompt 注入诱导 LLM 写越权 SQL（比如「查所有责任域的数据」）。只靠 prompt 里写「不要查敏感字段」是不够的，必须代码层强校验。
 - **多数据源**：主数据源是**汽车全域百表库**（`auto_full`，127 张表），另配一份医院演示库（`hospital_demo`）用来验证「同一份代码换一套角色模型」。按请求头 `X-Project-Id` 路由到不同的库、不同的向量 collection、不同的权限规则。
-- **效果**：104 条案例（两个数据源）全过离线安全门禁，实况 exec-match 执行准确率按 `category × difficulty` 分层统计。
+- **效果**：97 条案例全过离线安全门禁，实况 exec-match 执行准确率按 `category × difficulty` 分层统计。
 
 ### 10 分钟版
 
@@ -847,7 +847,7 @@ def normalize_rows(rows, precision=4):
 
 按 `category × difficulty` 出分层统计，默认门限 80%。
 
-**案例分层**（实测计数）：auto_full **63 条**（多表 JOIN 26 / 时间窗口 13 / 分组统计 7 / 排序 TopN 7 / 单表聚合 6 / 明细查询 4）+ hospital_demo **40 条**（单表聚合 9 / 分组统计 8 / 时间窗口 8 / 多表 JOIN 5 / 排序 TopN 5 / 明细查询 5），另有 1 条 badcase 回流案例。**两个数据源合计 104 条过离线门禁。**
+**案例分层**（实测计数）：auto_full **97 条**（多表 JOIN 35 / 时间窗口 19 / 分组统计 13 / 单表聚合 11 / 排序 TopN 11 / 明细查询 8），另有 1 个空的 badcase 回流槽位（`nl2sql_cases_reflow_auto_full.json`，随线上 badcase 审核回流增长）。**全部 97 条过离线门禁。**
 
 ### 7.5 CI / 部署
 
@@ -1108,6 +1108,6 @@ golden 是用**原始未钳制的 SQL** 跑的，而预测 SQL 是**过了安全
 
 ```bash
 .venv/bin/python -m pytest -q                    # 245 passed, 1 skipped
-.venv/bin/python eval/run_nl2sql_eval.py         # 离线门禁 104/104（auto_full 63 + hospital_demo 40 + 回流 1）
+.venv/bin/python eval/run_nl2sql_eval.py         # 离线门禁 97/97（auto_full）
 uvicorn src.main:app --port 8003                 # 起服务，/docs 有交互文档
 ```

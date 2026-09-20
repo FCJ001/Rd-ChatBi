@@ -41,10 +41,6 @@ DEFAULT_CASES = CASES_DIR / "nl2sql_cases_auto_full.json"
 #   这两个文件必须始终存在（空集也要有 {"cases": []}），否则案例集会在
 #   「有没有跑过导出」之间悄悄变化。
 CASE_FILES_BY_PROJECT: dict[str, list[Path]] = {
-    "hospital_demo": [
-        CASES_DIR / "nl2sql_cases_hospital.json",
-        CASES_DIR / "nl2sql_cases_reflow_hospital.json",
-    ],
     # 汽车全域 127 表压测库（scripts/gen_auto_full.py 生成 schema 与种子数据）
     "auto_full": [
         CASES_DIR / "nl2sql_cases_auto_full.json",
@@ -161,18 +157,57 @@ def _row_signature(row: dict, precision: int = 4) -> tuple:
     return tuple(sorted((_normalize_value(v, precision) for v in row.values()), key=repr))
 
 
+def _rounding_equivalent(a, b, precision: int = 4) -> bool:
+    """数值的「舍入等价」：一侧是另一侧按某个精度 ROUND 后的产物。
+
+    ★ 动机（AUF2/AUF5 实测，auto_full 2026-09-19）：模型写 ROUND(AVG(score), 2)
+      得 7.00，golden 是裸 AVG = 7.0009 —— 舍入到 2 位是**人类意义上的同一个
+      答案**，旧判定按 4 位精度硬比必判 ✗。「四舍五入不改变答案」必须被
+      判分器承认，否则等于惩罚模型输出得更可读。
+
+    ★ 方向不对称（堵假阳性）：
+      - b == round(a, k)，k ∈ [0, precision] —— 模型把真值舍入展示，放行；
+      - a == round(b, k)，k 从 **1** 起 —— golden 本身带 ROUND（案例作者写的）
+        而模型给了原始值，也放行。k=0 必须排除：银行家舍入 round(100.5, 0)
+        = 100，等于凭空接受 0.5 的偏差。
+      对真实数值差异的辨识力不受影响：1234.56 vs 1234.99、100.0 vs 100.5
+      在两个方向上都不是彼此的舍入产物，仍然 MISMATCH。
+
+    ★ 只对数值类型生效；字符串/日期走 _normalize_value 的原有等价，不经过这里。"""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return False
+    if not isinstance(a, (int, float, Decimal)) or not isinstance(b, (int, float, Decimal)):
+        return False
+    fa, fb = float(a), float(b)
+    for k in range(precision + 1):
+        if fb == round(fa, k):
+            return True
+    for k in range(1, precision + 1):
+        if fa == round(fb, k):
+            return True
+    return False
+
+
 def _row_covers(pred_row: dict, golden_row: dict, precision: int = 4) -> bool:
     """pred 的某一列能"认领"golden 的每一列 = golden 的值多重集 ⊆ pred 的值多重集。
 
     列名不参与比较（模型的别名与 golden 不同是常态）；pred 多出的列不参与匹配
-    （AUF40：模型多给了上月/上月上月的计数，不影响 diff 列的比较）。"""
+    （AUF40：模型多给了上月/上月上月的计数，不影响 diff 列的比较）。
+
+    快路径是舍入到 precision 后的精确匹配；失配时回退舍入等价
+    （_rounding_equivalent）再认领一次 —— AUF2 的
+    ROUND(AVG(soh),2)=86.50 vs 86.5009 就卡在快路径上。"""
     need = list(_row_signature(golden_row, precision))
     have = list(_row_signature(pred_row, precision))
     for v in need:
         if v in have:
             have.remove(v)
-        else:
+            continue
+        hit = next((i for i, h in enumerate(have)
+                    if _rounding_equivalent(v, h, precision)), None)
+        if hit is None:
             return False
+        have.pop(hit)
     return True
 
 
@@ -379,15 +414,78 @@ def _lint_case_quality(project: str, c: dict, validated_sql: str) -> list[str]:
 # 模式二：实况执行准确率（需要 LLM + 业务库）
 # ════════════════════════════════════════════════════════════════════════
 
+async def _recall_question_values(question: str, llm, es_value_repo) -> list:
+    """对单条评测问题跑与在线路径相同的值召回（extract_keywords → recall_values）。
+
+    ★ 为什么评测需要它：run_query 是「静态 schema → 直接生成」的简化路径，
+      不经过在线 LangGraph 的召回节点 —— ES 里的枚举列真实取值到不了模型
+      眼前，WHERE 字面量全凭先验瞎猜（AUF1 实测：库里存 '营业'，模型写
+      '营业中'，纯掷硬币；数据一换枚举字面量，命中率跟着塌）。评测在测
+      一条比线上更弱的路径，分数不可信 —— 这里把两个召回节点按在线方式
+      跑一遍，把值注回 schema（_schema_with_recalled_values），让评测与
+      在线看到同一个 prompt。
+
+    任何一步失败都降级为空列表 —— 召回挂了评测照跑（行为回到改造前），
+    不能让基础设施故障伪装成准确率下跌。"""
+    try:
+        from src.nl2sql.context import DataAgentContext
+        from src.nl2sql.nodes.extract_keywords import extract_keywords
+        from src.nl2sql.nodes.recall_values import recall_values
+        from src.nl2sql.state import DataAgentState
+
+        ctx = DataAgentContext(llm=llm, es_value_repo=es_value_repo)
+        state = DataAgentState(query=question)
+        state.update(await extract_keywords(state, ctx))
+        state.update(await recall_values(state, ctx))
+        return state.get("retrieved_values", [])
+    except Exception as e:
+        from src.core.logger import logger
+        logger.warning(f"[eval] 值召回失败，回退静态 schema: {type(e).__name__}: {e}")
+        return []
+
+
+def _schema_with_recalled_values(tables, values) -> str:
+    """把召回值临时挂到列 examples 上，按静态 schema 同款渲染重建 prompt。
+
+    ★ 标注与在线 merge_info 同款：「xxx（真实值）」可直接写进 WHERE，
+      「xxx（同义词，非库中取值）」只是字段线索 —— 两类混作一谈会让模型
+      把口语同义词当字面量写出查空的 SQL（generate_sql.prompt 有专节约束）。
+
+    ★ 用完必须恢复原状：tables 是整个评测循环复用的元数据对象，examples
+      一旦残留会在下一条案例里累积 —— 前一题召回的值泄漏进后一题的 prompt。"""
+    from src.nl2sql.engine import build_schema_prompt
+
+    col_map = {c.id: c for t in tables for c in t.columns}
+    saved: dict[int, tuple] = {}
+    for v in values:
+        col = col_map.get(v.column_id)
+        if col is None:
+            continue
+        label = (f"{v.value}（真实值）" if v.source == "db"
+                 else f"{v.value}（同义词，非库中取值）")
+        if label in col.examples:
+            continue
+        if id(col) not in saved:
+            saved[id(col)] = (col, list(col.examples))
+        col.examples.append(label)
+    try:
+        return build_schema_prompt(tables)
+    finally:
+        for col, original in saved.values():
+            col.examples[:] = original
+
+
 async def run_live_project(project: str, cases: list[dict],
                            fetch_examples: bool = True) -> tuple[float, int, int, dict[str, list[bool]]]:
     """跑一个数据源的全部案例，返回 (执行准确率, 通过数, 总数, 各类别通过情况)"""
     from src.api.deps import get_embedding_model, get_llm
     from src.infra.datasources import dw_session_factory, get_datasource
+    from src.infra.es_client import get_es_client
     from src.infra.milvus_client import get_milvus_client
     from src.nl2sql.engine import build_schema_prompt, run_query, setup_readonly_session
     from src.nl2sql.example_store import MilvusExampleRepository, find_similar_examples
     from src.nl2sql.repositories import PgMetaRepository
+    from src.nl2sql.repositories.es_value_repo import ESValueRepository
     from src.infra.db import AsyncSessionLocal
     from sqlalchemy import text
 
@@ -414,6 +512,9 @@ async def run_live_project(project: str, cases: list[dict],
     embedding_model = get_embedding_model()
     if not fetch_examples:
         print("  [ablation] 示例检索已禁用（--disable-examples）")
+    # 值召回（对齐在线路径，见 _recall_question_values 的说明）。
+    # 索引不存在（该数据源没同步过值）时 search 返回空列表，行为回到改造前。
+    es_value_repo = ESValueRepository(await get_es_client(), prefix=ds.milvus_prefix)
     stats: dict[str, list[bool]] = defaultdict(list)
     latencies: list[float] = []
     ambiguous: list[str] = []  # 判分器无唯一答案的题，不计入分子也不计入分母
@@ -425,9 +526,12 @@ async def run_live_project(project: str, cases: list[dict],
             t0 = asyncio.get_event_loop().time()
             examples = (await find_similar_examples(example_repo, embedding_model, c["question"])
                         if fetch_examples else [])
+            recalled_values = await _recall_question_values(c["question"], llm, es_value_repo)
             result = await run_query(
                 question=c["question"], llm=llm, db=db, role="admin",
-                role_rules=ds.role_rules, params={}, schema=schema,
+                role_rules=ds.role_rules, params={},
+                schema=(_schema_with_recalled_values(tables, recalled_values)
+                        if recalled_values else schema),
                 source_name=ds.name, sensitive_columns=ds.sensitive_columns,
                 examples=examples,
             )
@@ -544,7 +648,7 @@ class LayerGate:
 #   类别是真实待修项，不是门限设错 —— 等修完再决定要不要写 reason 放宽。
 #
 # ★ 用「(数据源, 类别)」而不是「类别」作键：同一个类别在不同数据源上难度不同
-#   （auto_full 是 127 张表的压测库，hospital_demo 只有几张表），全局键会把
+#   （127 表的压测库和几张表的演示库不可同日而语），全局键会把
 #   两者的差异抹平，逼着把门限调到迁就最差的那个。
 _LAYER_GATES: dict[tuple[str, str], LayerGate] = {}
 

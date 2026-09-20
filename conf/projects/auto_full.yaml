@@ -3596,7 +3596,7 @@ tables:
       - name: finished_at
         type: TIMESTAMP
         role: dimension
-        description: "完工时间"
+        description: "完工时间（未完成为 NULL）"
         alias: ["完工时间"]
   - name: svc_wo_labor_items
     role: fact

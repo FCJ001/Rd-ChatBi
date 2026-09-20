@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence
+from src.nl2sql.llm_text import safe_ainvoke, strip_code_fence, strip_value_labels
 from src.nl2sql.prompts import (
     FOLLOWUP_PROMPT,
     NL2SQL_SYSTEM_PROMPT,
@@ -161,7 +161,7 @@ async def generate_sql(
         messages.append(HumanMessage(content=question))
 
     response = await safe_ainvoke(llm, messages)
-    return strip_code_fence(response.content)
+    return strip_value_labels(strip_code_fence(response.content))
 
 
 async def setup_readonly_session(db: AsyncSession) -> None:

@@ -10,7 +10,7 @@
 #
 # 用法：
 #   python scripts/export_badcase_cases.py                     # 只预览（默认安全）
-#   python scripts/export_badcase_cases.py --datasource hospital_demo
+#   python scripts/export_badcase_cases.py --datasource auto_full
 #   python scripts/export_badcase_cases.py --write             # 真正落盘
 #   python scripts/export_badcase_cases.py --seed-from-export  # 把现有案例灌进表
 #

@@ -155,13 +155,13 @@ uvicorn src.main:app --port 8003
 <p>默认数据源 <code>auto_full</code>（汽车全域）；角色 admin / engineer（按工厂）/ sales（按大区）/ customer。</p>
 <p>脚本与评测：</p>
 <pre><code class="language-bash">.venv/bin/python -m pytest                          # 单测（211 条）
-.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：全部案例（当前 104 条）过安全层（CI 可跑）
+.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：全部案例（当前 97 条）过安全层（CI 可跑）
 .venv/bin/python eval/run_nl2sql_eval.py --live     # 实况准确率（需 LLM + 业务库）
-.venv/bin/python eval/run_nl2sql_eval.py --live --project hospital_demo   # 只跑单个数据源
-.venv/bin/python scripts/make_hospital_cases.py     # 校验 hospital_demo 案例的 golden SQL
+.venv/bin/python eval/run_nl2sql_eval.py --live --project auto_full   # 只跑单个数据源
+.venv/bin/python scripts/verify_cases.py            # 校验案例 golden SQL 在真实库上可执行
 </code></pre>
 <p>评测案例按数据源分文件：<code>eval/cases/nl2sql_cases_auto_full.json</code>（百表库，63 条）、
-<code>eval/cases/nl2sql_cases_hospital.json</code>（hospital_demo，40 条）。
+<code>eval/cases/nl2sql_cases_auto_full.json</code>（auto_full，97 条）。
 <code>--project</code> 默认 <code>all</code>，跑全部有案例的数据源。</p>
 <p>压测库的生成与接入（代码零改动，就是标准多数据源流程）：</p>
 <pre><code class="language-bash">.venv/bin/python scripts/gen_auto_full.py                       # 建库 + DDL + 208 万行种子 + YAML

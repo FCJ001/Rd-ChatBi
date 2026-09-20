@@ -14,7 +14,7 @@
 #
 # 用法：
 #   python scripts/mine_badcases.py                      # 只扫描打印，不写库（默认安全）
-#   python scripts/mine_badcases.py --datasource hospital_demo --dry-run
+#   python scripts/mine_badcases.py --datasource auto_full --dry-run
 #   python scripts/mine_badcases.py --write              # 真正 upsert
 #   python scripts/mine_badcases.py --include-clean      # 把「查成功但 0 行」也算候选
 # ============================================================

@@ -84,3 +84,33 @@ def test_validate_preserves_refusal_error():
     preserved = {"error": f"模型拒答：{refusal}"}  # 节点短路分支返回的 error 来自 state
     assert "敏感" in preserved["error"]
     assert "只允许 SELECT" not in preserved["error"]
+
+
+# ══ strip_value_labels：字面量里混入的值标注后缀 ══════════════════════
+# 背景（AUF6 实测 2026-09-20）：merge_info / 评测注入把枚举值挂成
+# 「致命（真实值）」，模型偶尔整串抄进 WHERE —— 查出 0 行。
+# 提示词专节解释过标注含义，仍拦不住偶发，生成后统一剥掉。
+
+from src.nl2sql.llm_text import strip_value_labels  # noqa: E402
+
+
+def test_strip_value_labels_in_where_literal():
+    sql = "SELECT COUNT(*) AS cnt FROM alm_issues WHERE severity = '致命（真实值）'"
+    assert strip_value_labels(sql) == \
+        "SELECT COUNT(*) AS cnt FROM alm_issues WHERE severity = '致命'"
+
+
+def test_strip_value_labels_synonym_label_and_multiple_literals():
+    sql = "SELECT * FROM t WHERE a = '营业（真实值）' AND b = '经销商（同义词，非库中取值）'"
+    assert strip_value_labels(sql) == "SELECT * FROM t WHERE a = '营业' AND b = '经销商'"
+
+
+def test_strip_value_labels_only_touches_quoted_text():
+    """引号外不能误伤：列别名/注释里出现同样的字样要保持原样"""
+    sql = "SELECT '致命（真实值）' AS 标注（真实值） FROM t -- 说明（真实值）"
+    assert strip_value_labels(sql) == "SELECT '致命' AS 标注（真实值） FROM t -- 说明（真实值）"
+
+
+def test_strip_value_labels_passthrough_clean_sql():
+    sql = "SELECT * FROM sal_dealers WHERE status = '营业'"
+    assert strip_value_labels(sql) == sql

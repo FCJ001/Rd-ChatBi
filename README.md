@@ -47,14 +47,14 @@ uvicorn src.main:app --port 8003
 
 ```bash
 .venv/bin/python -m pytest                          # 单测（211 条）
-.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：全部案例（当前 104 条）过安全层（CI 可跑）
+.venv/bin/python eval/run_nl2sql_eval.py            # 离线门禁：全部案例（当前 97 条）过安全层（CI 可跑）
 .venv/bin/python eval/run_nl2sql_eval.py --live     # 实况准确率（需 LLM + 业务库）
-.venv/bin/python eval/run_nl2sql_eval.py --live --project hospital_demo   # 只跑单个数据源
-.venv/bin/python scripts/make_hospital_cases.py     # 校验 hospital_demo 案例的 golden SQL
+.venv/bin/python eval/run_nl2sql_eval.py --live --project auto_full   # 只跑单个数据源
+.venv/bin/python scripts/verify_cases.py            # 校验案例 golden SQL 在真实库上可执行
 ```
 
 评测案例按数据源分文件：`eval/cases/nl2sql_cases_auto_full.json`（百表库，63 条）、
-`eval/cases/nl2sql_cases_hospital.json`（hospital_demo，40 条）。
+`eval/cases/nl2sql_cases_auto_full.json`（auto_full，97 条）。
 `--project` 默认 `all`，跑全部有案例的数据源。
 
 压测库的生成与接入（代码零改动，就是标准多数据源流程）：

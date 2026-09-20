@@ -252,7 +252,6 @@ def test_offline_gate_passes():
     assert failed == 0, "\n".join(failures)
     expected = sum(len(load_project_cases(p)) for p in CASE_FILES_BY_PROJECT)
     assert passed == expected
-    assert passed > len(load_cases()), "多数据源案例应多于单个默认文件"
 
 
 def test_every_datasource_has_cases():
@@ -306,3 +305,107 @@ def test_reflow_ids_do_not_collide():
         reflow_ids = [i for i in ids if i.startswith("R")]
         legacy = [i for i in ids if not i.startswith("R")]
         assert not (set(reflow_ids) & set(legacy)), f"{project}: 回流 id 与存量 id 冲突"
+
+
+# ══ 舍入等价：判分器必须承认「ROUND 不改变答案」 ══════════════════════
+# 背景（AUF2/AUF5 实测，auto_full 2026-09-19）：模型写 ROUND(AVG(score), 2)
+# 得 7.00，golden 是裸 AVG = 7.0009 —— 旧判定按 4 位精度硬比必判 ✗，等于
+# 惩罚模型输出得更可读。单表聚合类因此从 100% 掉到 50~67%，且每次挂的题
+# 不一样（模型哪天不写 ROUND 就过）—— 分数在掷硬币。
+
+
+def test_rounding_equivalence_pred_rounds_golden():
+    """AUF5：模型 ROUND(AVG,2)=7.00 vs golden 裸 AVG=7.00086875 → 同一答案"""
+    golden = [{"avg_score": 7.0008687500000000}]
+    assert classify_results(golden, [{"avg_score": 7.0}]) == EXACT
+    assert classify_results(golden, [{"avg_score": 7.001}]) == EXACT  # ROUND(...,3)
+
+
+def test_rounding_equivalence_with_extra_context_column():
+    """AUF2：模型多带一列 COUNT(*)（列超集本就放行），avg 还做了 ROUND"""
+    golden = [{"avg_soh": 86.5008888888888889}]
+    pred = [{"avg_soh": 86.5, "record_cnt": 4192}]
+    assert classify_results(golden, pred) == EXACT
+
+
+def test_rounding_equivalence_golden_has_round_pred_raw():
+    """反方向：golden 里写了 ROUND(...,2)，模型给了原始值 → 也算同一答案"""
+    assert classify_results([{"a": 7.0}], [{"a": 7.0008687}]) == EXACT
+
+
+def test_rounding_equivalence_does_not_mask_real_difference():
+    """边界：真实数值差异不是彼此的舍入产物，必须仍然 MISMATCH。
+    ★ 100.5 特别值得钉住：round(100.5, 0) 银行家舍入 = 100，
+      反方向若放开 k=0 会凭空接受 0.5 的偏差。"""
+    assert classify_results([{"a": 1234.56}], [{"a": 1234.99}]) == MISMATCH
+    assert classify_results([{"a": 100.0}], [{"a": 100.5}]) == MISMATCH
+    assert classify_results([{"a": 105}], [{"a": 107}]) == MISMATCH
+
+
+def test_rounding_equivalence_ignores_strings_and_dates():
+    """字符串/日期不走数值舍入：'营业' 与 '营业中' 不会因为「长得像」而等价"""
+    assert classify_results([{"a": 1234.56}], [{"a": "1234.56"}]) == MISMATCH
+    assert classify_results([{"s": "营业"}], [{"s": "营业中"}]) == MISMATCH
+
+
+# ══ 评测路径的值召回注入 ════════════════════════════════════════════
+# 背景（AUF1 实测）：run_query 是静态 schema 直连生成的弱路径，ES 里的
+# 枚举真实取值到不了模型眼前，WHERE 字面量全凭先验（库里 '营业'、模型
+# 写 '营业中'）。评测必须与在线路径看到同一个 prompt。
+
+
+def _fake_tables():
+    from src.nl2sql.entities import ColumnInfo, TableInfo
+
+    status = ColumnInfo(id="sal_dealers.status", name="status", type="VARCHAR(20)",
+                        role="dimension", description="营业状态")
+    name = ColumnInfo(id="sal_dealers.name", name="name", type="VARCHAR(100)",
+                      role="dimension", description="经销商名称")
+    return [TableInfo(id="sal_dealers", name="sal_dealers", role="fact",
+                      description="经销商", columns=[status, name])]
+
+
+def test_schema_with_recalled_values_mounts_db_and_alias_labels():
+    """db 值标「真实值」、alias 标「同义词」—— 与在线 merge_info 同款标注"""
+    from src.nl2sql.entities import ValueInfo
+
+    from run_nl2sql_eval import _schema_with_recalled_values
+
+    tables = _fake_tables()
+    values = [
+        ValueInfo(id="sal_dealers.status.db.营业", value="营业",
+                  column_id="sal_dealers.status", source="db"),
+        ValueInfo(id="sal_dealers.name.alias.经销商", value="经销商",
+                  column_id="sal_dealers.name", source="alias"),
+    ]
+    schema = _schema_with_recalled_values(tables, values)
+    assert "营业（真实值）" in schema
+    assert "经销商（同义词，非库中取值）" in schema
+
+
+def test_schema_with_recalled_values_restores_examples():
+    """★ tables 被整个评测循环复用：挂上去的值用完必须恢复，
+    否则前一题召回的值泄漏进后一题的 prompt"""
+    from src.nl2sql.entities import ValueInfo
+
+    from run_nl2sql_eval import _schema_with_recalled_values
+
+    tables = _fake_tables()
+    values = [ValueInfo(id="sal_dealers.status.db.营业", value="营业",
+                        column_id="sal_dealers.status", source="db")]
+    _schema_with_recalled_values(tables, values)
+    status_col = tables[0].columns[0]
+    assert status_col.examples == [], "examples 未恢复，值会跨案例泄漏"
+
+
+def test_schema_with_recalled_values_unknown_column_is_noop():
+    """召回值指向元数据外的列（ES 脏数据/元数据重同步过）→ 静默跳过"""
+    from src.nl2sql.entities import ValueInfo
+
+    from run_nl2sql_eval import _schema_with_recalled_values
+
+    tables = _fake_tables()
+    values = [ValueInfo(id="ghost_table.x.db.值", value="值",
+                        column_id="ghost_table.x", source="db")]
+    schema = _schema_with_recalled_values(tables, values)
+    assert "值（真实值）" not in schema
